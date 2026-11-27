@@ -33,6 +33,8 @@ pub enum Front {
     Galaxy,
     /// Unity Gaming Services' Lobby and Relay (ugs/), drained from their own thread.
     Ugs,
+    /// RallyHere's sessions (rallyhere/session.rs), drained from their own thread.
+    RallyHere,
     /// Vivox voice chat (vivox.rs), drained from the game's message polling.
     // Made by the 64-bit Vivox stand-in only (voice/vivox/).
     #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
@@ -41,7 +43,7 @@ pub enum Front {
 
 impl Front {
     #[cfg(test)]
-    pub const ALL: [Front; 8] = [Front::Eos, Front::Steam, Front::Party, Front::PlayFab, Front::PfLobby, Front::Galaxy, Front::Ugs, Front::Vivox];
+    pub const ALL: [Front; 9] = [Front::Eos, Front::Steam, Front::Party, Front::PlayFab, Front::PfLobby, Front::Galaxy, Front::Ugs, Front::RallyHere, Front::Vivox];
 
     /// Its name in the overlay state's `sdks` and in the catalog (`catalog::FRONTS`).
     pub fn name(self) -> &'static str {
@@ -53,6 +55,7 @@ impl Front {
             Front::PfLobby => "PfLobby",
             Front::Galaxy => "Galaxy",
             Front::Ugs => "Ugs",
+            Front::RallyHere => "RallyHere",
             Front::Vivox => "Vivox",
         }
     }

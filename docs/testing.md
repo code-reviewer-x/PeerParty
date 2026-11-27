@@ -26,6 +26,13 @@
   (`steam_legacy`): `SteamMatchmaking()`'s object wrapped whatever the DLL names (its
   class's RTTI says the version), a lobby created through it, and LobbyCreated_t and
   LobbyEnter_t reaching the game through classic `SteamAPI_RunCallbacks` dispatch.
+- RallyHere (`hook/src/rallyhere/`, no DLL, no game): its unit tests
+  (`cargo test -p peerparty_hook rallyhere`), the hostile-answer test of its harvest in
+  `hook/src/untrusted_tests.rs`, and `two_copies_sign_in_create_join_and_notify` in
+  `hook/src/rallyhere/session.rs`: two `Lan`s on loopback in one process, each signing in,
+  creating a session from a test template, posting an instance, joining, and each copy's
+  long-poll answering the other's changes. `tests\run_all.ps1` runs these with the rest of
+  the workspace.
 - Split screen (`tests/sdk/split_screen_test.py`, no DLL): one hidden two-player
   session (`peerparty --split-screen --instances 2`, `PEERPARTY_SESSION_HIDDEN=1`).
   Each copy is a starter that hands over to its game. The test checks both games
@@ -118,9 +125,11 @@ cpython-3.12-windows-x86-none` gets one).
 ## In games
 
 PeerParty has been played with two copies on one PC on Steam, EOS, PlayFab Party, GOG
-Galaxy, Photon Fusion and Unity Gaming Services (Lobby and Relay) games, and started as a
-package for Microsoft Store games. Many parts are covered by the automated tests above
-but haven't been played in a game yet, among them: drawing the overlay inside a game's
+Galaxy, Photon Fusion, Unity Gaming Services (Lobby and Relay) and RallyHere games (sign-in,
+creating a session, and joining it by short code, from the session browser and through a
+platform invite), and started as a package for Microsoft Store games. Many parts are covered
+by the automated tests above but haven't been played in a game yet, among them: RallyHere's
+official-mode harvest and RallyHere play between two PCs, drawing the overlay inside a game's
 frames, voice through the default microphone and speakers (Vivox included), and play
 between two PCs over the internet.
 
@@ -138,8 +147,62 @@ worth looking for:
 | Vivox | `vivox: PeerParty answers`, `vivox: joined channel`, `vivox: ... is in channel`, `vivox: ... volume N%` |
 | Overlay | `overlay: opened by ...`, `present: drawing the overlay inside the game's ... frames` |
 | Internet play | `inet connected to NAME`, `... now runs through the tunnel` |
+| RallyHere | `rallyhere: config.json read: ...`, `rallyhere <METHOD> <host><path> n=`, `gap: rallyhere ...`, `rallyhere: <resource> from config.json` |
 
 Please report what worked and what didn't, with the log. PeerParty stops a game in which
 EasyAntiCheat or BattlEye loads, or that starts an EOS Anti-Cheat session with the EOS
 layer on; don't run it in
 a game whose online play is protected by anti-cheat.
+
+### RallyHere by hand
+
+The automated tests above don't run a game. To try a RallyHere title, use one PC with two copies:
+
+1. Give the game's libcurl a patterns file if it is linked into the exe (or into a DLL that
+   doesn't export it), as described in [A game's own libcurl](usage.md#a-games-own-libcurl).
+2. Write the title's config in `%LOCALAPPDATA%\peerparty\rallyhere\<exe stem, lowercase>\config.json`,
+   starting from [docs/examples/rallyhere/config.json](examples/rallyhere/config.json). Put in the
+   API host the game calls (the host of its RallyHere requests) and session templates for the
+   session types the game creates. The example's values are made up; use the title's own.
+   Optionally add the `instance` defaults for the keys the game expects.
+3. Set `PEERPARTY_HTTP_TRACE=1` in the environment of the launch (`set PEERPARTY_HTTP_TRACE=1`
+   in cmd, `$env:PEERPARTY_HTTP_TRACE = "1"` in PowerShell).
+4. Start the first copy with `peerparty --multi-instance --player 1 <game.exe>`, then a second
+   with `peerparty --multi-instance --player 2 <game.exe>` (each in its own window).
+5. Play the steps below in the game, then read the PeerParty log in `%TEMP%\peerparty\logs\`.
+
+What to check, in each copy's log and in the game:
+
+- Sign-in: `rallyhere <POST> <host>/users/v1/login n=` lines, and no `gap: rallyhere` line for
+  it. The game shows the player signed in.
+- Session created: the host's log has `rallyhere: created session <id>`, and the game shows the
+  session with its players.
+- Join by short code: the second copy enters the code the host shows; its log has
+  `rallyhere: joined session <id>`, and the host's log has `rallyhere: <player uuid> joined session <id>`.
+- Join from the session browser: the browser route is answered (`rallyhere <GET> <host>/...browser`
+  lines), and the session lists in the second copy.
+- Platform invite: when the title's platform session is linked (the Steam lobby id of the
+  platform invite), the log has `rallyhere: session <id> linked to a Steam session`; the invite
+  opens the session in the second copy.
+- The host's instance is reached: the host's log has `rallyhere: instance set for session <id>`.
+  The joiner's view of the instance shows the host's connection string as an address that
+  reaches the host from its copy (not the host's own address), and the game connects to the
+  host. Its log shows the connection.
+
+Where to look when a step fails:
+
+- PeerParty's log: `gap: rallyhere ...` lines name a route the stand-in doesn't answer (404
+  `not_implemented`) or a session type with no template in the title's data (`session template
+  "<type>" isn't in the title's data`: not in config.json, the harvested files or their copies
+  kept from the game data sources). `rallyhere: config.json refused: ...` says why the file
+  was not read (a wrong type, a bound exceeded); the layer then stays off. When no hosts are
+  known from anywhere, `rallyhere: PEERPARTY_RALLYHERE is on but no hosts are known` says so
+  for `=1`.
+- PEERPARTY_HTTP_TRACE=1 logs each call to the title's host with its body (up to 4 KB). If
+  no call to the host appears, the game's libcurl isn't hooked: check the patterns file and
+  the `curl` log lines of the usage section.
+- The game's own log: `failed to ingest` means the game's SDK refused an answer it was given
+  (for an instance, its shape: compare the keys with `instance_startup_params` in config.json);
+  `Denied Login` means the sign-in answer was refused by the game (look at the login request
+  and its authorization in the trace).
+- Report the failing step with both logs.

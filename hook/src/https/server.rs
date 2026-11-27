@@ -28,6 +28,20 @@ impl Request {
     }
 }
 
+thread_local! {
+    /// Headers the service asked for on the answer it is building.
+    static EXTRA: std::cell::RefCell<Vec<(String, String)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Adds a header to the answer the calling service is building (`handle` returns only a
+/// status and a body). Call it from `handle`; it is dropped once the answer is sent.
+pub fn add_header(name: &str, value: &str) {
+    // A line break in either would split the head.
+    if !value.contains(['\r', '\n']) && !name.contains(['\r', '\n', ':']) {
+        EXTRA.with(|e| e.borrow_mut().push((name.to_string(), value.to_string())));
+    }
+}
+
 pub fn serve(conn: TcpStream) {
     let _ = conn.set_read_timeout(Some(Duration::from_secs(120)));
     let _ = conn.set_nodelay(true);
@@ -65,9 +79,11 @@ pub fn serve(conn: TcpStream) {
             upgrade(tls, &req, pending);
             return;
         }
+        EXTRA.with(|e| e.borrow_mut().clear());
         let (status, body) = (service.handle)(&req);
+        let extra: String = EXTRA.with(|e| e.borrow_mut().drain(..).map(|(k, v)| format!("{k}: {v}\r\n")).collect());
         let head = format!(
-            "HTTP/1.1 {status} {}\r\n{}Content-Length: {}\r\nX-RequestId: peerparty\r\n{}\r\n",
+            "HTTP/1.1 {status} {}\r\n{extra}{}Content-Length: {}\r\nX-RequestId: peerparty\r\n{}\r\n",
             reason(status),
             if status == 204 { "" } else { "Content-Type: application/json; charset=utf-8\r\n" },
             body.len(),

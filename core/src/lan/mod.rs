@@ -29,7 +29,7 @@ mod tests;
 use channel::*;
 pub use lobby::JoinCheck;
 use lobby::*;
-pub use policy::{ChannelKind, Trust};
+pub use policy::{ChannelKind, PUBLIC_VALUE_BYTES, Trust};
 use policy::*;
 
 use crate::id::{Identity, PeerId};

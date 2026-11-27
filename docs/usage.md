@@ -158,7 +158,7 @@ out: update the add-on to get it.
 ### From a prompt
 
 ```
-peerparty [--room CODE] [--log-dir DIR] [--multi-instance] [--copy-saves] [--player N] [--set key=value]... <game.exe> [args...]
+peerparty [--room CODE] [--data-source URL]... [--log-dir DIR] [--multi-instance] [--copy-saves] [--player N] [--set key=value]... <game.exe> [args...]
 peerparty --new-room
 peerparty --net-test
 peerparty --saves <game.exe>
@@ -190,7 +190,7 @@ both.
   that event), a notification appears, and the player accepts or declines in the
   overlay.
 - `PEERPARTY_MODE_<SERVICE>=lan|official|auto` (`PHOTON`, `UGS`, `EOS`, `PLAYFAB`,
-  `STEAM`, `GALAXY`; and `STEAMID`, default `auto`: `lan` shows the game a SteamID of its own for
+  `RALLYHERE`, `STEAM`, `GALAXY`; and `STEAMID`, default `auto`: `lan` shows the game a SteamID of its own for
   this PC so players never share one, `official` keeps the one its steam_api gives, `auto` is
   `lan` unless the Steam client runs the game): PeerParty's own stand-in (your local network, room and public players), the service's official servers (the
   game meets real online players), or official when they answer and PeerParty's otherwise. Set by the launcher from its settings,
@@ -289,6 +289,12 @@ both.
 - `PEERPARTY_UGS=0` / `=1`: never / always answer Unity Gaming Services' Authentication,
   Lobby and Relay locally (default: for games that ship Unity's Lobby, Relay or
   Multiplayer SDK).
+- `PEERPARTY_RALLYHERE=0` / `=1`: never / always answer RallyHere's web API locally, for the
+  title's hosts (default: on once hosts are known, below). `=1` without any host logs that
+  they are missing and stays off. `PEERPARTY_RALLYHERE_HOSTS=host,host` names the hosts in
+  place of the config file's, and `PEERPARTY_RALLYHERE_DIR=folder` reads the config and keeps
+  its data in that folder instead of `%LOCALAPPDATA%\peerparty\rallyhere\<exe stem, lowercase>`;
+  only that folder is read then, never the cache of [game data sources](#game-data-sources).
 - `PEERPARTY_VIVOX=0` / `=1`: never / always answer Vivox voice chat on the LAN
   (default: whenever Unity Gaming Services are answered locally, since Vivox would
   refuse that sign-in).
@@ -309,7 +315,7 @@ both.
 - `PEERPARTY_PEERS=host[:port],...`: extra beacon targets for networks that broadcast
   doesn't cross (VPNs, other subnets).
 - `PEERPARTY_SKIP=layer,...`: turns PeerParty layers off for a game that objects to
-  one: `swap`, `invite`, `eos`, `steam`, `party`, `pfmp`, `playfab`, `photon`, `ugs`, `galaxy`, `demonware`, `dns`,
+  one: `swap`, `invite`, `eos`, `steam`, `party`, `pfmp`, `playfab`, `photon`, `ugs`, `rallyhere`, `galaxy`, `demonware`, `dns`,
   `padblock` (holding controllers back while the overlay shows), `present` (drawing the
   overlay inside the game), `ipfwd` (typed-IP forwarding to internet players, and the
   path to another PC's Photon servers; without it they're reached directly, which that
@@ -372,10 +378,13 @@ both.
   started from among them.
 - `PEERPARTY_HTTP_TRACE=1`: log the HTTP calls the game makes, through its curl or
   WinHTTP, to the services PeerParty stands in for (PlayFab, Unity Gaming Services,
-  Xbox Live, Demonware, Steam's Web API), with their URLs and bodies (up to 4 KB each;
+  RallyHere, Xbox Live, Demonware, Steam's Web API), with their URLs and bodies (up to 4 KB each;
   never their headers). Other hosts aren't logged. `PEERPARTY_XBL_TRACE=1` does the same.
-- `PEERPARTY_PATTERNS_DIR=folder`: the folder of pattern files to read instead of
-  `%LOCALAPPDATA%\peerparty\patterns` (below).
+- `PEERPARTY_PATTERNS_DIR=folder`: the only folder of pattern files to read, in place of
+  `%LOCALAPPDATA%\peerparty\patterns` and the cache of
+  [game data sources](#game-data-sources) (below).
+- `PEERPARTY_DATA_SOURCES=https://a.example/data;https://b.example/data`: the game data
+  sources for this run, in place of the Settings' ones (below). `;` alone means no source.
 
 The same thing from a prompt (x64 or x86):
 
@@ -636,6 +645,95 @@ Relay or Multiplayer SDK:
   N away ...: volume N%, pan P` (-1 left to +1 right); `voice: microphone '...'` and
   `voice: speakers '...' open` name the devices in use.
 
+In a game started through PeerParty, RallyHere (hook/src/rallyhere/), for games whose sign-in,
+sessions and notifications use RallyHere's web API over HTTPS. Every title has its own API
+host, so nothing is answered until the game's hosts are known:
+
+- Give the hosts in `PEERPARTY_RALLYHERE_HOSTS=api.example-game.invalid` or in the game's
+  config file (`"hosts"`). Lookups of those hosts go to PeerParty's local HTTPS service, and
+  its requests are answered there. A game whose libcurl is linked into its exe needs a
+  patterns file for it, see [A game's own libcurl](#a-games-own-libcurl). The mode `auto`
+  is LAN for this layer (it doesn't probe the service); `official` leaves the layer out, so
+  the game uses the real service.
+- The config file is `%LOCALAPPDATA%\peerparty\rallyhere\<exe stem, lowercase>\config.json`
+  (the folder is named after the game's exe without `.exe`, in lowercase). It is read once
+  per run, as UTF-8 text of at most 256 KiB. A wrong type or a bound exceeded refuses the
+  whole file, with one log line saying why, and the layer then stays off for the run, even
+  with `PEERPARTY_RALLYHERE_HOSTS` set or a config.json kept from the game data sources: fix
+  the file, or remove it to use those. Keys
+  starting with `_` and unknown keys are ignored, so a `_note` can say where the values came
+  from. Strings are at most 1024 characters:
+  - `hosts`: a list of host names, at most 16. A port and a trailing dot are ignored.
+  - `templates`: an object keyed by session type, at most 64 entries. Each is a session
+    template with RallyHere's field names (the fields the web API documents; unknown fields
+    are dropped). Templates are per game and nothing works without them: a session type
+    with no template fails with RallyHere's error, and a `gap:` line in the log.
+  - `kv`: an object of strings, at most 256 entries: the key-value settings the config
+    service answers.
+  - `instance` (optional): `instance_startup_params`, an object whose values are strings or
+    objects of strings, and `join_params`, with `public_conn_str` and `private_conn_str` as
+    strings and `custom_data` an object of strings. Every hosted instance is rendered with
+    these keys: the game's own values win, and a default fills in a key the game did not
+    send. A default connection string is rewritten for a joiner only when it holds an address.
+    With public sessions on, an instance the game hosts may hold at most 1000 bytes (what a
+    public session's players take); a longer one is refused with RallyHere's error (413)
+    and the log line `rallyhere: instance of session <id> refused (413)`.
+- The example, with made-up values, is [docs/examples/rallyhere/config.json](examples/rallyhere/config.json):
+
+  ```json
+  {
+    "_note": "Made-up values. Replace the hosts, templates and defaults with the title's own.",
+    "hosts": ["api.example-game.invalid"],
+    "templates": {
+      "example_party": {
+        "engine_session_type": "example_party",
+        "can_join_matchmaking": true,
+        "can_be_created_by_players_directly": true,
+        "notify_on_reservation": false
+      }
+    },
+    "kv": { "example_motd": "Welcome to the example title" },
+    "instance": {
+      "instance_startup_params": { "map": "", "mode": "", "misc_params": "" },
+      "join_params": { "custom_data": {}, "private_conn_str": "", "public_conn_str": "" }
+    }
+  }
+  ```
+
+- Official mode harvests the title's data. With `PEERPARTY_MODE_RALLYHERE=official` the game
+  talks to the real service, and PeerParty copies what it sees of the title's data (session
+  templates, key-value settings, regions and the shape of a hosted instance's settings, with
+  every value left blank) into the `harvested\` folder beside config.json: `template.json`,
+  `kv.json`, `regions.json` and `instance.json`. Nothing about you or other players is kept:
+  no sign-in, tokens, inventory, friends, presence, ids or addresses. Files are written only in
+  official mode, atomically, each validated and at most 256 KiB, and an identical file is not
+  rewritten. Its curl calls are seen through the game's libcurl, so that needs its patterns
+  file too.
+- Precedence, per resource (the hosts, the templates, the key-value settings, the regions, the
+  instance's settings): your config.json's value when it is not empty, then your harvested
+  file, then the config.json kept by the [game data sources](#game-data-sources), then its
+  harvested file, then nothing. A harvested or kept file that is refused (too big, not valid)
+  counts as absent; your own config.json refused turns the layer off (see above).
+  `regions.json` is what the regions route serves, in place of the one local region. The log
+  says which was used: `rallyhere: templates from config.json`,
+  `rallyhere: templates from harvested\template.json`, `rallyhere: templates from cached
+  config.json` or `rallyhere: templates from cached harvested\template.json`.
+- Troubleshooting. In `%TEMP%\peerparty\logs\` look for `rallyhere: config.json read: N hosts,
+  N templates, N kv entries` (or `config.json refused: ...`), `rallyhere: PEERPARTY_RALLYHERE
+  is on but no hosts are known`, `rallyhere <method> <host><path> n=` for each answered request
+  (throttled), and `gap: rallyhere ...` for a route or a template that isn't answered. With
+  `PEERPARTY_HTTP_TRACE=1` the calls to the title's hosts are logged with their bodies (up to
+  4 KB each), which shows what the game sent and what came back. The game's own log shows what
+  it did with those answers; compare the two.
+- Voice through Epic works: a member of a session that asks for its Epic voice join gets a room
+  named after the session (the same for every member) and its own EOS user id, then the game joins
+  that room through the EOS layer, which puts the members in one LAN voice room (the same voice
+  settings and `PEERPARTY_VOICE=0` apply). Voice through Vivox, and a team's voice room, aren't
+  answered (the `voip` routes answer the unknown-route error, with a `gap:` line).
+- Not supported: matchmaking tickets, voice other than through Epic (see above),
+  inventory and DLC data (inventory reads empty, entitlements grant nothing, store writes are
+  refused), and game data sources that need a login or are private.
+
 Offline (no internet at all, or the online services shut down):
 
 - Steam: lobbies, P2P, NetworkingSockets, friends and invites are all LAN. Steam in
@@ -651,6 +749,8 @@ Offline (no internet at all, or the online services shut down):
 - Photon: rooms are hosted by a copy on the LAN; Photon Cloud is never contacted.
 - Unity Gaming Services: sign-in, lobbies, relays and Vivox voice are PeerParty's (QoS
   and other Unity services are not).
+- RallyHere: sign-in, sessions, notifications and hosted instances are PeerParty's once
+  the title's hosts are in its config (or `PEERPARTY_RALLYHERE_HOSTS`); no internet is needed.
 - Finding each other: by UDP broadcast on the LAN, and copies on one PC also through a
   peer board (`%LOCALAPPDATA%\peerparty\peers`), which needs no network adapter at
   all.
@@ -845,7 +945,10 @@ checks off for that request only). Every other request keeps the game's settings
   the `...`, not `Curl_vsetopt`) and `curl_easy_cleanup`, both needed, and, if the game
   uses it, `curl_easy_reset`. Bytes are hex, `??` a wildcard; each pattern must match
   exactly one place in the module's code, and the first that does is used. A packed exe
-  is searched again for a minute while it unpacks.
+  is searched again for a minute while it unpacks. A module with no usable file there uses
+  the file of the same name kept by the [game data sources](#game-data-sources), if there is
+  one; your own file always wins, even when it has no entry for the build, unless it can't
+  be used at all (too big, not valid), which counts as no file.
 
   ```json
   { "versions": [
@@ -862,6 +965,56 @@ checks off for that request only). Every other request keeps the game's settings
 - A curl that can't pin a key (older than 7.39, or a TLS back end without it) is left
   alone, and its calls to PeerParty's hosts still fail (the log says `gap: curl ... can't
   pin`). `PEERPARTY_SKIP=curl` turns the curl hooks off.
+
+### Game data sources
+
+Patterns files and RallyHere config files are data about one game, and a player who made
+one can share it. PeerParty has no list of places to get them from and fetches nothing by
+default. You name the places (a "source"), and from then on, each time you start a game
+through PeerParty, it asks them for that game's files only, over HTTPS, before the game
+starts.
+
+- Name sources in the launcher's Settings > Advanced > Game data sources (separated by `;`),
+  with `PEERPARTY_DATA_SOURCES=url;url` for a run (`--set data_sources=url;url` also works
+  from a prompt), or with `--data-source url` on the command line, repeated for several. The
+  command line wins over the environment, which wins over the Settings; they are not added
+  up. Sources are asked in order, and for each file the first source that has it wins. At
+  most 8 are used. From cmd or PowerShell, `PEERPARTY_DATA_SOURCES=;` is the way to say "no
+  source" for a run (an empty variable can't be set there); it overrides the Settings'.
+- A source is a base address, `https://host/folder`, and PeerParty only reads files below
+  it, laid out as your own folders are: `patterns/<module>.json` (the module's file name,
+  for example `patterns/MyGame-Win64-Shipping.exe.json`), `rallyhere/<exe stem>/config.json`
+  and `rallyhere/<exe stem>/harvested/<resource>.json`, with `<resource>` one of `template`,
+  `kv`, `regions` and `instance`. The exe stem is the game's exe name without `.exe`, in
+  lowercase. The files have the formats of the same files in your own folders, and a source
+  needn't have all of them. A name with spaces or other special characters is asked
+  percent-encoded. [docs/examples](examples) has a patterns file and a config file to start
+  from.
+- Any plain web server serves a source, and so does a folder of a git hosting site through
+  its raw-file address, which is a plain file server. Only `https://` is used: an `http://`
+  address is refused (the log says so), and so is one with a user name, a query or a
+  fragment. There are no cookies and no sign-in: a source that needs either isn't supported.
+  A redirect to another HTTPS address is followed (the log names where the file came from);
+  a redirect to plain HTTP is refused. Each request waits a few seconds at most, and a game's
+  start waits 8 seconds for all of them: a slow source is left out for that start.
+- What comes back is data from a stranger and is checked as your own files are: bounded in
+  size (1 MiB for a patterns file, 256 KiB for the others), parsed, and kept only when the
+  hook would take it whole. A file that fails is not kept, and the next source is asked. A
+  patterns file that uses a key added in a later PeerParty version is refused whole by an
+  older one, which doesn't know the key. The RallyHere files aren't: an unknown key in them
+  is ignored, as in your own config.json, but a value an older version doesn't accept (a
+  type or a size it doesn't know) refuses the file there too. Whoever maintains a source
+  should keep to what the oldest version their players use understands, or serve files that
+  one can read too.
+- The files are kept in `%LOCALAPPDATA%\peerparty\remote\`: `patterns\<module>.json`,
+  `rallyhere\<exe stem>\config.json` and `rallyhere\<exe stem>\harvested\<resource>.json`.
+  A file the sources don't have, or an offline PC, leaves the kept one as it was, so a game
+  that worked online still starts with its data offline. The hook never downloads anything:
+  it reads this folder after your own files (the precedence is in
+  [A game's own libcurl](#a-games-own-libcurl) for patterns and in the RallyHere notes for
+  its config), so your own files always win and a source can't replace them. To drop a kept
+  file, delete it. The log (look for `game data:`) says what was asked, what was updated, and
+  what was not and why.
 
 ### Internet play
 

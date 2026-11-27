@@ -252,6 +252,13 @@ impl App {
             });
         });
         ui.add_space(12.0);
+        // Game data sources (sources.rs): none to begin with, the player names them.
+        widgets::card(ui, |ui| {
+            ui.set_width(ui.available_width());
+            widgets::card_title(ui, Icon::Globe, theme::ACCENT, t!("settings.data_sources"), t!("settings.data_sources_sub"));
+            widgets::text_field(ui, &mut self.settings.prefs.data_sources, t!("settings.data_sources_hint"), ui.available_width(), 4000);
+        });
+        ui.add_space(12.0);
         widgets::card(ui, |ui| {
             ui.set_width(ui.available_width());
             widgets::card_title(ui, Icon::Help, theme::WARN, t!("settings.troubleshoot"), "");
@@ -515,7 +522,7 @@ mod tests {
         let ids: Vec<&str> = layers().iter().map(|(id, _)| *id).collect();
         assert_eq!(
             ids,
-            ["steam", "eos", "party", "pfmp", "playfab", "galaxy", "photon", "ugs", "vivox", "xboxlive", "xgameui", "invite", "padblock", "present", "ipfwd", "swap", "dns"]
+            ["steam", "eos", "party", "pfmp", "playfab", "galaxy", "photon", "ugs", "rallyhere", "vivox", "xboxlive", "xgameui", "invite", "padblock", "present", "ipfwd", "swap", "dns"]
         );
         for id in ids {
             let (name, effect) = (format!("layer.{id}"), format!("off.{id}"));
@@ -530,7 +537,7 @@ mod tests {
         let modes: Vec<(&str, &str)> = sdk_modes().map(|(id, _, default)| (id, default)).collect();
         assert_eq!(
             modes,
-            [("photon", "lan"), ("eos", "lan"), ("ugs", "lan"), ("playfab", "lan"), ("demonware", "lan"), ("steam", "lan"), ("galaxy", "lan"), ("steamid", "auto")]
+            [("photon", "lan"), ("eos", "lan"), ("ugs", "lan"), ("playfab", "lan"), ("rallyhere", "lan"), ("demonware", "lan"), ("steam", "lan"), ("galaxy", "lan"), ("steamid", "auto")]
         );
         assert_eq!(sdk_name("demonware", "Demonware"), "Demonware");
         assert_eq!(Prefs::default().mode(&Default::default(), "steamid"), "auto");

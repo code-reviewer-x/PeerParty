@@ -37,6 +37,7 @@ mod platform;
 mod portable;
 mod release;
 mod saves;
+mod sources;
 mod steamid;
 mod ui;
 mod update;

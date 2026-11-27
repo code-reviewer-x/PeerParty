@@ -118,9 +118,11 @@ pub(super) fn cap_presence(kv: &mut Vec<(String, String)>) {
 
 /// What a public player's lobbies may hold (EOS's own limits are lower: 64 attributes,
 /// 1000-character values), so a stranger can't hand the game oversized or endless data.
+/// A longer text value is dropped: a layer whose values can be longer refuses them in a
+/// public session rather than have them vanish there (hook/src/rallyhere/instance.rs).
 pub(super) const PUBLIC_ATTRS: usize = 100;
 pub(super) const PUBLIC_KEY_BYTES: usize = 256;
-pub(super) const PUBLIC_VALUE_BYTES: usize = 1000;
+pub const PUBLIC_VALUE_BYTES: usize = 1000;
 pub(super) const PUBLIC_MEMBERS: usize = 64;
 pub(super) const PUBLIC_ID_BYTES: usize = 256;
 pub(super) const PUBLIC_CONNECT_BYTES: usize = 1024;

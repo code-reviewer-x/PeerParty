@@ -480,6 +480,53 @@ has no game or SDK code in it.
   the communications default until it's back.
 - QoS and Matchmaker are left alone.
 
+### RallyHere (`hook/src/rallyhere/`)
+
+- For games whose sign-in, sessions and notifications use RallyHere's web API over HTTPS.
+  Each title's API host comes from its configuration (`PEERPARTY_RALLYHERE_HOSTS` or the
+  game's config.json), never from code, and lookups of those hosts resolve to the local HTTPS
+  service. The game's libcurl pins PeerParty's key for them (curl/tls.rs), so the certificate
+  needs no names. The layer is on only when hosts are known.
+- Identity: sign-in always succeeds, whatever grant the game asks for, as this copy's player.
+  The player's uuid derives from the LAN PeerId, so every copy computes the same one. Tokens
+  are unsigned JWT-like strings that PeerParty issued and remembers; a bearer token it didn't
+  issue gets 401, and other authorization (a login's client credentials) passes.
+- Services that stay local: server time, key-values (with ETags), events, friends (the LAN's
+  players), presence, matches (the last 50, kept in `matches.json`), recently played,
+  performance stats, and developer files (kept under `files\`, 1 MiB each, names sanitised).
+- Inventory (`inventory.rs`, one entry point; every inventory route is answered there): reads empty,
+  entitlement processing completes with nothing granted, orders are empty, and store writes
+  are refused and logged. Nothing in it reads or unlocks content.
+- Sessions are LAN lobbies (the `rallyhere.session` namespace). Creating one takes a session
+  type that the config's templates name; the session's JSON, players, browser, short codes,
+  actions and regions follow the API, and ETags come from the lobby's state. Every member's
+  copy hears each change as a notification. Everything a public-session player sends is
+  bounded and covered by fuzz tests.
+- Notifications: a queue of 50 per player (the oldest dropped), and the long-poll answers at
+  once when newer ones exist, else waits on a condition variable until its deadline (30 s by
+  default, 900 s at most). At most four polls wait per player; a fifth is answered at once.
+- Player-hosted instances (`instance.rs`): the instance lives on the lobby, visible to its
+  members. The host's `ip:port` connection strings are rewritten for each other copy to an
+  address that reaches the host from there (its LAN address, or the typed-IP forwarder for
+  internet play). Other strings, such as EOS's, pass unchanged. Addresses never reach a log
+  unredacted. The config's instance defaults are applied when an instance is rendered, and
+  nothing is stored. A public session's players take lobby values of 1000 bytes at most
+  (core's cap on what strangers send), so while a copy plays public sessions an instance
+  longer than that, counting the stand-ins written over its addresses, is refused (413 and
+  a log line) rather than reaching them as none. It isn't split in parts: each part would
+  be checked for addresses alone, and one cut in two would get through.
+- Title data: the config's templates, key-values, instance defaults and, in official mode,
+  the harvested files (`harvested\`, with config.json's value first per resource; see
+  usage.md). Official mode runs no stand-in: the game talks to the real service and the
+  curl hooks copy its title data (`harvest.rs`).
+- Platform sessions (`platform.rs`): a RallyHere session can be linked to a platform session
+  id, such as a Steam lobby id from PeerParty's Steam layer, so a lookup of that id finds it;
+  linked sessions are listed among the other lobbies.
+- Any other route gets RallyHere's error envelope (`not_implemented`, 404) and a `gap:` line.
+  Session voice goes through Epic (`voip.rs`: a room name shared by the session's members and
+  the caller's ProductUserId, served by the EOS layer's LAN voice rooms). Matchmaking tickets
+  and other voice are not carried.
+
 ### Xbox Live (`hook/src/xboxlive/`, `xgameui.rs`)
 
 - For Microsoft Store games: the social, profile, presence and privacy hosts are answered
@@ -538,13 +585,14 @@ process is affected.
 
 ## Official servers per service (`hook/src/modes.rs`)
 
-`PEERPARTY_MODE_<SDK>` = `lan`, `official` or `auto` for Photon, UGS, EOS, PlayFab, Steam
-and Galaxy. Official leaves that layer out entirely, so the game reaches the real service.
+`PEERPARTY_MODE_<SDK>` = `lan`, `official` or `auto` for Photon, UGS, EOS, PlayFab, RallyHere,
+Steam and Galaxy. Official leaves that layer out entirely, so the game reaches the real service.
 Auto checks once per run whether the service answers (or, for Steam and Galaxy, whether
 the client runs) and picks official if so, else LAN. Every service is LAN until the player
 changes it (the launcher's defaults, `launcher/src/ui/store.rs` `SDK_MODES`): with auto,
 the same game could end up on either side from one run to the next, and its rooms on
-official servers are out of the overlay's invites.
+official servers are out of the overlay's invites. RallyHere's `auto` is LAN (it doesn't
+probe the service, which has a host per title).
 
 ## Internet play (`core/src/inet/`)
 
@@ -813,6 +861,7 @@ hand, attaching `peerparty.exe` (that exact name) is enough.
   speech and translation behind Party's transcription and text-to-speech.
 - Ownership, entitlements, DLC and licence checks, by design.
 - Anti-cheat games, by design.
+- RallyHere's matchmaking tickets, its voice other than through Epic, and its inventory and DLC data.
 - Interfaces listed as gaps above, and anything a game's log names in a `gap:` line.
 
 ## Safety rails

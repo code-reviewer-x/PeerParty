@@ -317,6 +317,9 @@ pub struct Prefs {
     /// Lighting and animations in the window and the overlay (off also when Windows'
     /// animation effects are off).
     pub effects: bool,
+    /// Game data sources (sources.rs), as typed: `https://` base addresses separated by `;`
+    /// or spaces, asked in order. Empty: none, nothing is fetched.
+    pub data_sources: String,
 }
 
 impl Default for Prefs {
@@ -344,6 +347,7 @@ impl Default for Prefs {
             guide_tip_shown: false,
             language: String::new(),
             effects: true,
+            data_sources: String::new(),
         }
     }
 }

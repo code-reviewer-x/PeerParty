@@ -22,14 +22,14 @@ use crate::net::dns::DnsService;
 use crate::overlay::OverlayListener;
 
 pub static DNS: &[&DnsService] =
-    &[&crate::playfab::DNS, &crate::ugs::DNS, &crate::xboxlive::DNS, &crate::photon::DNS, &crate::demonware::DNS, &crate::steam::web::DNS];
+    &[&crate::playfab::DNS, &crate::ugs::DNS, &crate::rallyhere::DNS, &crate::xboxlive::DNS, &crate::photon::DNS, &crate::demonware::DNS, &crate::steam::web::DNS];
 
 pub static HTTPS: &[&HttpsService] =
-    &[&crate::ugs::HTTPS, &crate::demonware::HTTPS, &crate::xboxlive::HTTPS, &crate::steam::web::HTTPS, &crate::playfab::HTTPS];
+    &[&crate::ugs::HTTPS, &crate::demonware::HTTPS, &crate::xboxlive::HTTPS, &crate::steam::web::HTTPS, &crate::rallyhere::HTTPS, &crate::playfab::HTTPS];
 
 pub static INVITES: &[&InviteCarrier] = &[&crate::steam::INVITES, &crate::eos::INVITES, &crate::playfab::mp::INVITES, &crate::galaxy::INVITES];
 
-pub static OTHER_LOBBIES: &[&str] = &[crate::playfab::party::NS, crate::ugs::lobby::NS];
+pub static OTHER_LOBBIES: &[&str] = &[crate::playfab::party::NS, crate::ugs::lobby::NS, crate::rallyhere::session::NS];
 
 pub static OVERLAY: &[&OverlayListener] = &[&crate::steam::OVERLAY, &crate::eos::OVERLAY, &crate::galaxy::OVERLAY];
 

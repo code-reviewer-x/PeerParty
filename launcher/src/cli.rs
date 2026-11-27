@@ -12,7 +12,7 @@ use crate::launch::{self, Launch, LaunchError, SplitScreen};
 use crate::{backend, firewall, host};
 use peerparty_protocol::session::LayoutPreset;
 
-pub const USAGE: &str = "usage: peerparty [--room CODE] [--public] [--set key=value] [--log-dir DIR] [--multi-instance] [--copy-saves] [--player N] [--split-screen [--instances N] [--layout horizontal|vertical|top2|bottom2|grid|slots:...] [--inputs auto|kbm|pad|xinput:N|wgi:ID|hid:ID,...] [--no-kbm] [--stagger smart|0..60] [--no-sync] [--fps 0|1/2|1/3|15..240] [--render-scale 50..100] [--no-upscale] [--no-vram-budget] [--no-cpu-balance] [--names A,B,...] [--monitor N]] <game.exe> [args...]\n         plays the game through peerparty: the local network, plus the internet with --room or --public\n         a simple .bat or .cmd that starts the game works too: peerparty starts the program it runs\n         --set changes one setting for this run: name=Alex, voice=off, internet=off, overlay=off, auto_accept=on, ... (docs/usage.md)\n         --player N plays alone as player N (1-4): that player's saves, name and identity\n       peerparty --saves <game.exe>   (each player's saves for the game, and their backups)\n       peerparty --copy-save FROM TO <game.exe> | --swap-saves A B <game.exe> | --reset-save N <game.exe> | --restore-save N BACKUP <game.exe>   (players 1-4; the one replaced is backed up first)\n       peerparty --invite   (invites every other player to the game in front)\n       peerparty --new-room   (makes a room code for internet play)\n       peerparty --net-test   (checks this PC's internet path: STUN, NAT type, the DHT)\n       peerparty --pads   (lists the controllers the overlay reads, and their buttons)\n       peerparty --firewall <game.exe>   (whether Windows Firewall lets other players connect to it)\n       peerparty --fix-firewall <game.exe> [--public]   (as administrator: lets them, on private and domain networks, and public ones with --public)\n       peerparty --remove-firewall   (as administrator: removes every firewall rule peerparty added)\n       peerparty --blocked | --block FINGERPRINT | --unblock FINGERPRINT|all   (public players you blocked)\n       peerparty --friends | --friend FINGERPRINT | --unfriend FINGERPRINT|all   (friends for PEERPARTY_PUBLIC_FRIENDS_ONLY=1)";
+pub const USAGE: &str = "usage: peerparty [--room CODE] [--public] [--set key=value] [--log-dir DIR] [--multi-instance] [--copy-saves] [--player N] [--data-source URL]... [--split-screen [--instances N] [--layout horizontal|vertical|top2|bottom2|grid|slots:...] [--inputs auto|kbm|pad|xinput:N|wgi:ID|hid:ID,...] [--no-kbm] [--stagger smart|0..60] [--no-sync] [--fps 0|1/2|1/3|15..240] [--render-scale 50..100] [--no-upscale] [--no-vram-budget] [--no-cpu-balance] [--names A,B,...] [--monitor N]] <game.exe> [args...]\n         plays the game through peerparty: the local network, plus the internet with --room or --public\n         a simple .bat or .cmd that starts the game works too: peerparty starts the program it runs\n         --set changes one setting for this run: name=Alex, voice=off, internet=off, overlay=off, auto_accept=on, ... (docs/usage.md)\n         --player N plays alone as player N (1-4): that player's saves, name and identity\n         --data-source URL fetches the game's data files from that https:// source before it starts, in place of Settings' sources (repeat it for more, asked in order)\n       peerparty --saves <game.exe>   (each player's saves for the game, and their backups)\n       peerparty --copy-save FROM TO <game.exe> | --swap-saves A B <game.exe> | --reset-save N <game.exe> | --restore-save N BACKUP <game.exe>   (players 1-4; the one replaced is backed up first)\n       peerparty --invite   (invites every other player to the game in front)\n       peerparty --new-room   (makes a room code for internet play)\n       peerparty --net-test   (checks this PC's internet path: STUN, NAT type, the DHT)\n       peerparty --pads   (lists the controllers the overlay reads, and their buttons)\n       peerparty --firewall <game.exe>   (whether Windows Firewall lets other players connect to it)\n       peerparty --fix-firewall <game.exe> [--public]   (as administrator: lets them, on private and domain networks, and public ones with --public)\n       peerparty --remove-firewall   (as administrator: removes every firewall rule peerparty added)\n       peerparty --blocked | --block FINGERPRINT | --unblock FINGERPRINT|all   (public players you blocked)\n       peerparty --friends | --friend FINGERPRINT | --unfriend FINGERPRINT|all   (friends for PEERPARTY_PUBLIC_FRIENDS_ONLY=1)";
 
 /// A parsed command-line invocation.
 pub enum Command {
@@ -75,6 +75,10 @@ pub fn parse(raw: impl IntoIterator<Item = OsString>) -> Result<Command, String>
             Some("--player") => {
                 args.next();
                 launch.player = Some(player_arg(args.next())?);
+            }
+            Some("--data-source") => {
+                args.next();
+                launch.data_sources.push(args.next().ok_or(USAGE)?.to_string_lossy().into_owned());
             }
             Some(w @ ("--saves" | "--copy-save" | "--swap-saves" | "--reset-save" | "--restore-save")) => {
                 let w = w.to_string();
@@ -559,5 +563,18 @@ mod tests {
             parse(args(&["--fix-firewall", "game.exe", "--public", "--report", "pipe1"])),
             Ok(Command::FixFirewall { public: true, report: Some(ref r), .. }) if r == "pipe1"
         ));
+    }
+
+    /// `--data-source` can be given again: each one is a source, in order.
+    #[test]
+    fn data_sources_are_given_one_by_one() {
+        let Ok(Command::Launch { launch, .. }) = parse(args(&["--data-source", "https://a.example.invalid/d", "--player", "2", "--data-source", "https://b.example.invalid", "game.exe"])) else {
+            panic!("expected Launch")
+        };
+        assert_eq!(launch.data_sources, ["https://a.example.invalid/d", "https://b.example.invalid"]);
+        assert_eq!((launch.player, launch.first), (Some(1), PathBuf::from("game.exe")));
+        let Ok(Command::Launch { launch, .. }) = parse(args(&["game.exe"])) else { panic!("expected Launch") };
+        assert!(launch.data_sources.is_empty());
+        assert!(parse(args(&["--data-source"])).is_err());
     }
 }

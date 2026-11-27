@@ -529,6 +529,9 @@ pub struct Launch {
     /// `--player N`: one copy, as player N (0 is player 1): that player's saves, name and
     /// identity.
     pub player: Option<u32>,
+    /// `--data-source URL`, each time it is given: this run's game data sources
+    /// (sources.rs), instead of `PEERPARTY_DATA_SOURCES`'s or Settings'.
+    pub data_sources: Vec<String>,
 }
 
 /// Starts the game `l` names with PeerParty, hosts it, and returns how it ended.
@@ -595,6 +598,9 @@ pub fn start(l: Launch) -> Result<Exited, LaunchError> {
         apply_set(&mut prefs, k, v);
     }
     settings_env(&mut env, &prefs, &game).map_err(|e| log_failure(&log_dir, &exe, e))?;
+    // The game's data files from the player's sources, into the cache its hook reads: a few
+    // seconds at most, and whatever happens the game starts.
+    crate::sources::before_start(&l.data_sources, &mut env, &prefs.data_sources, &exe, &platform::data_dir());
     env.set(penv::LOG_DIR, &log_dir);
     // The hook tells its LAN peers which PeerParty it is, commit included (net.rs).
     env.set(penv::VERSION, format!("{} ({})", env!("CARGO_PKG_VERSION"), option_env!("PEERPARTY_DESCRIBE").unwrap_or("no git")));
@@ -905,7 +911,7 @@ fn settings_env(env: &mut ChildEnv, prefs: &Prefs, game: &store::GameOptions) ->
 
 /// `--set key=value`: one setting for this run (`auto_accept=on`, `overlay=off`,
 /// `voice=off`, `steam_saves=off`, `public_voice=off`, `internet=off`,
-/// `language=de`, `effects=off`, `mode.photon=official`, ...).
+/// `language=de`, `effects=off`, `mode.photon=official`, `data_sources=...`, ...).
 pub fn apply_set(p: &mut Prefs, k: &str, v: &str) {
     let on = matches!(v.to_ascii_lowercase().as_str(), "1" | "on" | "true" | "yes" | "auto");
     match k {
@@ -926,6 +932,7 @@ pub fn apply_set(p: &mut Prefs, k: &str, v: &str) {
         "internet" => p.internet = on,
         "language" => p.language = v.to_string(),
         "effects" => p.effects = on,
+        "data_sources" => p.data_sources = v.to_string(),
         k if k.starts_with("mode.") => {
             p.modes.insert(k["mode.".len()..].to_string(), v.to_string());
         }

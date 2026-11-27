@@ -1774,6 +1774,7 @@ fn sdk_label(s: &str) -> &str {
         "PfLobby" => "PlayFab Lobby",
         "Galaxy" => "GOG Galaxy",
         "Ugs" => "Unity Gaming Services",
+        "RallyHere" => "RallyHere",
         other => other,
     }
 }
@@ -1786,6 +1787,7 @@ fn lobby_kind(ns: &str) -> Option<&'static str> {
         "playfab" | "party" => "PlayFab",
         "galaxy" => "GOG Galaxy",
         "ugs" => "Unity",
+        "rallyhere" => "RallyHere",
         _ => return None,
     })
 }

@@ -981,6 +981,8 @@ mod tests {
         let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert_eq!(why_not_for(&[], &[], &["steam"], None, false), InviteBlock::LayersOff(names(&["steam"])));
         assert_eq!(why_not_for(&[Front::Party], &[], &["eos", "galaxy"], None, false), InviteBlock::LayersOff(names(&["eos", "galaxy"])));
+        // RallyHere's sessions are LAN lobbies too.
+        assert_eq!(why_not_for(&[Front::RallyHere], &[], &["rallyhere"], None, false), InviteBlock::LayersOff(names(&["rallyhere"])));
         // Voice off doesn't stop invites.
         assert_eq!(why_not_for(&[], &[], &["vivox"], None, false), InviteBlock::HostFirst);
         // Another service PeerParty answers carries the invite: hosting there is what's missing.

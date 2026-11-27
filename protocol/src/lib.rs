@@ -5,6 +5,9 @@
 //! - `catalog`: the online services, PeerParty's layers, the hook's front ends and the
 //!   anti-cheat file names.
 //! - `json`: the JSON the pipe and the services' REST bodies use, 64-bit ids exact.
+//! - `gamedata`: a game's data files (curl patterns, RallyHere config and harvested
+//!   files): their checks, shared by the hook that reads them and the launcher that
+//!   fetches them.
 //! - `ipc`: the messages on the pipe, notices with codes, and line framing.
 //! - `shm`: the overlay frame block's header and its sequence lock.
 //! - `frame_ring`: which of a split-screen copy's shared frame textures the compositor
@@ -22,6 +25,7 @@
 pub mod catalog;
 pub mod env;
 pub mod frame_ring;
+pub mod gamedata;
 pub mod input_shm;
 pub mod ipc;
 pub mod json;

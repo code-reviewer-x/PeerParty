@@ -83,11 +83,14 @@ pub struct HookConfig {
     pub voice: Option<bool>,
     pub voice_aec: Option<bool>,
 
-    /// The services' own switches: `PEERPARTY_PHOTON`, `_PLAYFAB`, `_UGS`, `_XBL`,
-    /// `_DEMONWARE`, `_VIVOX`.
+    /// The services' own switches: `PEERPARTY_PHOTON`, `_PLAYFAB`, `_UGS`, `_RALLYHERE`,
+    /// `_XBL`, `_DEMONWARE`, `_VIVOX`.
     pub photon: Option<bool>,
     pub playfab: Option<bool>,
     pub ugs: Option<bool>,
+    pub rallyhere: Option<bool>,
+    /// `PEERPARTY_RALLYHERE_HOSTS`: the RallyHere API's hosts, as written (empty when unset).
+    pub rallyhere_hosts: Vec<String>,
     pub xbl: Option<bool>,
     pub demonware: Option<bool>,
     pub vivox: Option<bool>,
@@ -108,9 +111,10 @@ pub struct HookConfig {
     /// `PEERPARTY_PHOTON_IP`: a loopback address for the Photon servers (tests).
     pub photon_ip: Option<std::net::Ipv4Addr>,
     /// The stand-ins' folders, for tests: `PEERPARTY_PLAYFAB_DIR`, `_UGS_DIR`,
-    /// `_GALAXY_DIR`, `_DEMONWARE_DIR` (non-empty).
+    /// `_RALLYHERE_DIR`, `_GALAXY_DIR`, `_DEMONWARE_DIR` (non-empty).
     pub playfab_dir: Option<PathBuf>,
     pub ugs_dir: Option<PathBuf>,
+    pub rallyhere_dir: Option<PathBuf>,
     pub galaxy_dir: Option<PathBuf>,
     pub demonware_dir: Option<PathBuf>,
 }
@@ -169,6 +173,8 @@ impl HookConfig {
             photon: switch(env::PHOTON),
             playfab: switch(env::PLAYFAB),
             ugs: switch(env::UGS),
+            rallyhere: switch(env::RALLYHERE),
+            rallyhere_hosts: env::parse_list(&get(env::RALLYHERE_HOSTS).unwrap_or_default()).into_iter().map(String::from).collect(),
             xbl: switch(env::XBL),
             demonware: switch(env::DEMONWARE),
             vivox: switch(env::VIVOX),
@@ -183,6 +189,7 @@ impl HookConfig {
             photon_ip: text(env::PHOTON_IP).and_then(|v| v.trim().parse::<std::net::Ipv4Addr>().ok()).filter(|ip| ip.is_loopback()),
             playfab_dir: dir(env::PLAYFAB_DIR),
             ugs_dir: dir(env::UGS_DIR),
+            rallyhere_dir: dir(env::RALLYHERE_DIR),
             galaxy_dir: dir(env::GALAXY_DIR),
             demonware_dir: dir(env::DEMONWARE_DIR),
         }
@@ -241,6 +248,10 @@ impl HookConfig {
         Self::live_dir(env::UGS_DIR, self.ugs_dir.as_ref())
     }
 
+    pub fn rallyhere_dir(&self) -> Option<PathBuf> {
+        Self::live_dir(env::RALLYHERE_DIR, self.rallyhere_dir.as_ref())
+    }
+
     pub fn galaxy_dir(&self) -> Option<PathBuf> {
         Self::live_dir(env::GALAXY_DIR, self.galaxy_dir.as_ref())
     }
@@ -294,6 +305,9 @@ mod tests {
             ("PEERPARTY_ROOM", "   "),
             ("PEERPARTY_PIPE", r"\\.\pipe\x"),
             ("PEERPARTY_UGS_DIR", ""),
+            ("PEERPARTY_RALLYHERE", "1"),
+            ("PEERPARTY_RALLYHERE_HOSTS", "a.example.test, b.example.test;c.example.test"),
+            ("PEERPARTY_RALLYHERE_DIR", r"C:\rh"),
             ("PEERPARTY_GALAXY_DIR", r"C:\g"),
             ("PEERPARTY_DEMONWARE_DIR", r"C:\dw"),
             ("PEERPARTY_MODE_PHOTON", " Official "),
@@ -307,6 +321,9 @@ mod tests {
         assert_eq!(c.room, None, "only spaces is no room");
         assert_eq!(c.ipc.as_deref(), Some(r"\\.\pipe\x"));
         assert_eq!(c.ugs_dir, None);
+        assert_eq!(c.rallyhere, Some(true));
+        assert_eq!(c.rallyhere_hosts, ["a.example.test", "b.example.test", "c.example.test"]);
+        assert_eq!(c.rallyhere_dir, Some(PathBuf::from(r"C:\rh")));
         assert_eq!(c.galaxy_dir, Some(PathBuf::from(r"C:\g")));
         assert_eq!(c.demonware_dir, Some(PathBuf::from(r"C:\dw")));
         assert_eq!(c.mode("photon"), SdkMode::Official);

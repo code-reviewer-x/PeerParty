@@ -46,12 +46,17 @@ pub fn handle(kind: Kind, peer: PeerId) -> usize {
         magic: MAGIC,
         kind: kind as u32,
         peer,
-        text: CString::new(peer.hex()).unwrap(),
+        text: CString::new(id_text(peer)).unwrap(),
     }));
     let p = obj as *const IdObj as usize;
     r.by_peer.insert((kind, peer), p);
     r.by_ptr.insert(p, (kind, peer));
     p
+}
+
+/// The string form of a peer's ids (`EOS_*_ToString`).
+pub fn id_text(peer: PeerId) -> String {
+    peer.hex()
 }
 
 pub fn puid(peer: PeerId) -> usize {
@@ -110,7 +115,7 @@ pub unsafe fn to_string(kind: Kind, id: usize, buf: *mut c_char, len: *mut i32) 
     if len.is_null() {
         return INVALID_PARAMETERS;
     }
-    let text = peer.hex();
+    let text = id_text(peer);
     let need = text.len() as i32 + 1;
     unsafe {
         if buf.is_null() || *len < need {
@@ -134,6 +139,18 @@ pub unsafe fn from_string(kind: Kind, s: *const c_char) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_peers_id_text_is_what_to_string_writes() {
+        let p = PeerId([7; 16]);
+        let mut buf = [0 as c_char; 40];
+        let mut len = 40;
+        assert_eq!(unsafe { to_string(Kind::Product, puid(p), buf.as_mut_ptr(), &mut len) }, super::super::abi::result::SUCCESS);
+        let written = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }.to_str().unwrap().to_string();
+        assert_eq!(written, id_text(p));
+        assert_eq!(written, super::super::product_user_id(p));
+        assert_eq!(PeerId::from_hex(&written), Some(p));
+    }
 
     #[test]
     fn handles_are_stable_and_typed() {

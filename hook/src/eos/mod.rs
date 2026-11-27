@@ -53,6 +53,12 @@ pub(crate) fn lan() -> Option<&'static Lan> {
 type Later = Box<dyn FnOnce() + Send>;
 static LATER: Mutex<Vec<Later>> = Mutex::new(Vec::new());
 
+/// The ProductUserId string `peer` has in this process, as `EOS_ProductUserId_ToString` writes
+/// it: what a game gets for its player and hands back to `EOS_RTC_JoinRoom` and the like.
+pub(crate) fn product_user_id(peer: PeerId) -> String {
+    ids::id_text(peer)
+}
+
 /// Runs `f` on the next tick, the way EOS completes every async call.
 pub(crate) fn later(f: impl FnOnce() + Send + 'static) {
     crate::sys::lock(&LATER).push(Box::new(f));

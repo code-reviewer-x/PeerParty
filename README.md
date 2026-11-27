@@ -104,6 +104,7 @@ itself still runs. PeerParty moves that part onto the players' own PCs:
 | **Photon** | Realtime / PUN rooms served by one of the players' copies (name, master and game servers over UDP, TCP and WebSocket), Photon Voice, Chat, Bolt, and Fusion's Host, Server, Client and Shared modes. |
 | **Unity Gaming Services** | Authentication, Lobby (with Wire events), Relay (plain and DTLS), Cloud Save and Remote Config; Vivox voice chat, positional (proximity) channels included. |
 | **Demonware** | Sign-in, the lobby service's server time and matchmaking (sessions hosted, updated, searched for and found by player), and Demonware's own address check, alongside the game's Steam lobbies and invites. |
+| **RallyHere** | Sign-in and identity, sessions on the LAN with their templates, notifications, a player-hosted instance's connection strings, platform sessions (a Steam lobby), friends and presence, and session voice through Epic; inventory and entitlements answer empty. Matchmaking tickets and other voice aren't carried. |
 | **Xbox app games** | Started as packages with PeerParty inside; PlayFab Party's Xbox Live helper and the Xbox Live friends and presence calls are answered by PeerParty. |
 
 Anything PeerParty doesn't carry behaves as if that service were offline or had nothing
@@ -145,6 +146,7 @@ PeerParty carries these services today, and more can be added:
 - **GOG Galaxy**: lobbies, P2P, invites
 - **Photon**: Realtime / PUN, Bolt, Fusion, Voice and Chat
 - **Unity Gaming Services**: Lobby, Relay and Vivox voice
+- **RallyHere**: sessions, notifications and hosted instances, for titles whose hosts are configured
 - **Demonware**: sign-in and matchmaking
 - **Xbox app games**: PlayFab Party's Xbox Live helper, friends and presence
 

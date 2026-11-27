@@ -93,6 +93,8 @@ pub const SDKS: &[SdkEntry] = &[
         ..sdk("ugs", "Unity Gaming Services", "PEERPARTY_MODE_UGS", AutoProbe::Tcp { host: "player-auth.services.api.unity.com", port: 443 })
     },
     SdkEntry { layer: Some("playfab"), uses_https: true, ..sdk("playfab", "PlayFab", "PEERPARTY_MODE_PLAYFAB", AutoProbe::Tcp { host: "1.playfabapi.com", port: 443 }) },
+    // Each title has its own API host, known only from its config (hook/src/rallyhere/): nothing to probe.
+    SdkEntry { layer: Some("rallyhere"), uses_https: true, ..sdk("rallyhere", "RallyHere", "PEERPARTY_MODE_RALLYHERE", AutoProbe::None) },
     // Its sign-in hosts are each title's own: the domain answering stands in for them.
     SdkEntry {
         layer: Some("demonware"),
@@ -169,6 +171,7 @@ pub const LAYERS: &[LayerEntry] = &[
     service("galaxy", true),
     service("photon", true),
     service("ugs", true),
+    service("rallyhere", true),
     service("vivox", false),
     service("xboxlive", false),
     service("xgameui", false),
@@ -236,6 +239,7 @@ pub const FRONTS: &[FrontEntry] = &[
     FrontEntry { name: "PfLobby", label: "PlayFab Lobby", layer: "pfmp", invite_carrier: true },
     FrontEntry { name: "Galaxy", label: "GOG Galaxy", layer: "galaxy", invite_carrier: true },
     FrontEntry { name: "Ugs", label: "Unity Gaming Services", layer: "ugs", invite_carrier: false },
+    FrontEntry { name: "RallyHere", label: "RallyHere", layer: "rallyhere", invite_carrier: false },
     FrontEntry { name: "Vivox", label: "Vivox", layer: "vivox", invite_carrier: false },
 ];
 
@@ -292,9 +296,9 @@ mod tests {
         let ids = |it: &mut dyn Iterator<Item = &'static SdkEntry>| it.map(|s| s.id).collect::<Vec<_>>();
         // The hook's auto checks (modes.rs SERVICES) and the launcher's list (store.rs
         // SDK_MODES), with demonware, which the launcher didn't offer.
-        assert_eq!(ids(&mut mode_sdks()), ["photon", "eos", "ugs", "playfab", "demonware", "steam", "galaxy", "steamid"]);
-        assert_eq!(ids(&mut SDKS.iter().filter(|s| s.uses_https)), ["ugs", "playfab", "demonware", "steam", "xboxlive"]);
-        assert_eq!(https_layers().collect::<Vec<_>>(), ["ugs", "playfab", "demonware", "steam", "xboxlive"]);
+        assert_eq!(ids(&mut mode_sdks()), ["photon", "eos", "ugs", "playfab", "rallyhere", "demonware", "steam", "galaxy", "steamid"]);
+        assert_eq!(ids(&mut SDKS.iter().filter(|s| s.uses_https)), ["ugs", "playfab", "rallyhere", "demonware", "steam", "xboxlive"]);
+        assert_eq!(https_layers().collect::<Vec<_>>(), ["ugs", "playfab", "rallyhere", "demonware", "steam", "xboxlive"]);
         assert_eq!(sdk_entry("photon").unwrap().auto_probe_port(), Some(4533));
         assert_eq!(sdk_entry("steam").unwrap().auto_probe, AutoProbe::SteamClient);
         assert_eq!(sdk_entry("steamid").unwrap().default_mode, SdkMode::Auto);
@@ -303,6 +307,8 @@ mod tests {
         assert!(!sdk_entry("steamid").unwrap().has_skip_toggle());
         // The hook's names for services left on their servers (modes.rs official_in_use).
         assert_eq!(sdk_label("ugs"), "Unity Gaming Services");
+        assert_eq!(sdk_label("rallyhere"), "RallyHere");
+        assert_eq!(sdk_entry("rallyhere").unwrap().auto_probe, AutoProbe::None);
         assert_eq!(sdk_label("nothing"), "an online service");
     }
 
@@ -312,7 +318,7 @@ mod tests {
         // launcher/src/ui/settings.rs layers()
         assert_eq!(
             page,
-            ["steam", "eos", "party", "pfmp", "playfab", "galaxy", "photon", "ugs", "vivox", "xboxlive", "xgameui", "invite", "padblock", "present", "ipfwd", "swap", "dns"]
+            ["steam", "eos", "party", "pfmp", "playfab", "galaxy", "photon", "ugs", "rallyhere", "vivox", "xboxlive", "xgameui", "invite", "padblock", "present", "ipfwd", "swap", "dns"]
         );
         // hook/src/net.rs GENERAL_LAYERS, in any order
         let mut general: Vec<&str> = always_reported_layers().map(|l| l.id).collect();
@@ -321,9 +327,9 @@ mod tests {
         // hook/src/invite.rs LOBBY_LAYERS
         let mut lobbies: Vec<&str> = LAYERS.iter().filter(|l| l.carries_lobbies).map(|l| l.id).collect();
         lobbies.sort_unstable();
-        assert_eq!(lobbies, ["eos", "galaxy", "party", "pfmp", "photon", "playfab", "steam", "ugs"]);
+        assert_eq!(lobbies, ["eos", "galaxy", "party", "pfmp", "photon", "playfab", "rallyhere", "steam", "ugs"]);
         // Every layer the hook checks with skip().
-        for id in ["steam", "eos", "party", "pfmp", "playfab", "galaxy", "photon", "ugs", "vivox", "xboxlive", "xgameui", "demonware", "invite", "padblock", "present", "ipfwd", "swap", "dns", "steamown", "calls", "curl"] {
+        for id in ["steam", "eos", "party", "pfmp", "playfab", "galaxy", "photon", "ugs", "rallyhere", "vivox", "xboxlive", "xgameui", "demonware", "invite", "padblock", "present", "ipfwd", "swap", "dns", "steamown", "calls", "curl"] {
             assert!(layer(id).is_some(), "{id}");
         }
         let mut seen = std::collections::HashSet::new();

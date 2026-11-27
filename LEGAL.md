@@ -17,7 +17,9 @@ players on one PC, directly with friends, and after its online services have clo
   works in the game's memory, for that run.
 - **Store checks stay with the store.** A game's licence, DLC, entitlement and purchase
   queries (Steam's licence and DLC calls, Epic's Ecom, Galaxy's DLC calls, store
-  inventories) go to the store's own software, or come back empty or offline. PlayFab's
+  inventories) go to the store's own software, or come back empty or offline. RallyHere's
+  inventory reads come back empty, its entitlements grant nothing and its store writes are
+  refused. PlayFab's
   purchase, receipt, coupon, currency, grant, trade and inventory-change calls, and its
   whole admin API, fail as unavailable;
   its other web API calls that PeerParty doesn't implement get an empty success, which
@@ -41,6 +43,8 @@ players on one PC, directly with friends, and after its online services have clo
     PeerParty connects you to, with every permission allowed;
   - EOS sessions report sanctions as disabled, with no sanctioned players (Epic's
     sanctions query itself still fails as offline);
+  - RallyHere sign-in succeeds as the PeerParty player, with PeerParty's own tokens, and
+    its identity calls are answered locally;
   - Demonware sign-in, lobby authentication and token requests succeed locally with
     PeerParty's own session tickets and tokens, and `bdDDL` checksum verification reports
     matching checksums; publisher files aren't bundled with PeerParty and are served only
@@ -66,6 +70,31 @@ but your own window mode and resolution kept; Windows
 Firewall rules for a game, when you press **Fix** and approve Windows' prompt; the key
 of its local certificate, in your Windows user's key store; and, while it starts an
 Xbox app game, Windows' debug setting for that package, which it clears at once.
+
+When a game uses PeerParty's RallyHere stand-in, PeerParty keeps the title's config.json
+you wrote in `%LOCALAPPDATA%\peerparty\rallyhere\<game>\` (the folder named after its exe),
+and there its match records (`matches.json`) and the developer files the game uploaded
+(`files\`), for the LAN runs that need them.
+
+When a game's RallyHere service is set to its official servers, PeerParty keeps a copy of
+that game's title data from the service your own game talked to (session templates,
+key-value settings, regions and the shape of a hosted match's settings, with every
+value left blank) in
+`%LOCALAPPDATA%\peerparty\rallyhere\<game>\harvested\`, so later LAN or offline runs
+have it. Nothing about you or other players is kept there: no sign-in, tokens,
+inventory, friends, presence, ids or addresses.
+
+When you name game data sources (Settings > Advanced, `PEERPARTY_DATA_SOURCES` or
+`--data-source`; there are none to begin with), PeerParty asks them, over HTTPS, without
+signing in and without cookies, for the data files of the game it is about to start, and
+keeps the ones they have in `%LOCALAPPDATA%\peerparty\remote\` (`patterns\` and
+`rallyhere\<game>\`, with `harvested\` inside). Nothing is fetched when you name no source,
+and only the started game's files are asked for. What a source sends is JSON data, checked
+and size-bounded before it is kept, never code PeerParty runs; the game's hook reads it
+only after your own files, which always win, and downloads nothing itself. A source sees your IP address and which game's files are asked
+for, as any web server would, and so does another HTTPS address a source redirects the
+request to (never a plain HTTP one). The requests say they come from
+`PeerParty/<version>`.
 
 The services PeerParty stands in for run inside the game's process, with a certificate
 trusted by that process alone; nothing is installed in Windows' certificate stores.

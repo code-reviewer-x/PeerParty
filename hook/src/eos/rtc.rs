@@ -301,17 +301,26 @@ struct NoRoomOptions {
     options: usize,
 }
 
+/// The room a JoinRoom asks for and its LAN voice room key: from the room name alone, so every
+/// copy joining a name is in one room. `ClientBaseUrl` and `ParticipantToken` are not read.
+fn join_target(o: &JoinRoomOptions) -> Option<(String, String)> {
+    let room = str_of(o.RoomName);
+    (!room.is_empty()).then(|| {
+        let k = key(&room);
+        (room, k)
+    })
+}
+
 unsafe extern "system" fn join_room(_h: usize, o: *const JoinRoomOptions, cd: usize, cb: usize) {
     let (Some(lan), false) = (lan(), o.is_null()) else {
         return complete(cb, cd, INVALID_PARAMETERS, 0, "", NoRoomOptions { count: 0, options: 0 });
     };
     let o = unsafe { &*o };
-    let room = str_of(o.RoomName);
-    if room.is_empty() {
+    let Some((room, voice_key)) = join_target(o) else {
         return complete(cb, cd, INVALID_PARAMETERS, o.LocalUserId, "", NoRoomOptions { count: 0, options: 0 });
-    }
+    };
     LOCAL.store(o.LocalUserId, Ordering::Relaxed);
-    voice::join(lan, &key(&room), o.bManualAudioInputEnabled == 0, o.bManualAudioOutputEnabled == 0);
+    voice::join(lan, &voice_key, o.bManualAudioInputEnabled == 0, o.bManualAudioOutputEnabled == 0);
     trace("EOS_RTC_JoinRoom", || format!("{room} flags={:#x}", o.Flags));
     complete(cb, cd, SUCCESS, o.LocalUserId, &room, NoRoomOptions { count: 0, options: 0 });
 }
@@ -1138,6 +1147,8 @@ pub fn pump(lan: &Lan) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use peerparty_core::PeerId;
+    use std::ffi::CString;
     #[cfg(target_pointer_width = "64")]
     use std::mem::offset_of;
 
@@ -1154,6 +1165,33 @@ mod tests {
         assert_eq!(size_of::<RoomDone<NoRoomOptions>>(), 48);
         assert_eq!(offset_of!(LobbyRoomChanged, bIsConnected), 24);
         assert_eq!(offset_of!(SendDataOptions, Data), 32);
+    }
+
+    fn options(local: usize, room: &CString, token: &CString, url: &CString) -> JoinRoomOptions {
+        JoinRoomOptions {
+            ApiVersion: 1,
+            LocalUserId: local,
+            RoomName: room.as_ptr(),
+            ClientBaseUrl: url.as_ptr(),
+            ParticipantToken: token.as_ptr(),
+            ParticipantId: 0,
+            Flags: 0,
+            bManualAudioInputEnabled: 0,
+            bManualAudioOutputEnabled: 0,
+        }
+    }
+
+    #[test]
+    fn two_copies_joining_a_room_by_name_key_the_same_lan_voice_room() {
+        let room = CString::new("rallyhere-abc").unwrap();
+        let (url, token) = (CString::new("one").unwrap(), CString::new("two").unwrap());
+        let (other_url, other_token) = (CString::new("").unwrap(), CString::new("x").unwrap());
+        let a = options(ids::puid(PeerId([1; 16])), &room, &token, &url);
+        let b = options(ids::puid(PeerId([2; 16])), &room, &other_token, &other_url);
+        assert_eq!(join_target(&a), Some(("rallyhere-abc".to_string(), "eos:rallyhere-abc".to_string())));
+        assert_eq!(join_target(&a), join_target(&b), "another user, token and base URL: the same room");
+        let none = CString::new("").unwrap();
+        assert_eq!(join_target(&options(0, &none, &token, &url)), None, "no room name is refused");
     }
 
     #[test]

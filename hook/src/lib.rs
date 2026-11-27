@@ -38,6 +38,7 @@ mod eos;
 mod galaxy;
 mod photon;
 mod playfab;
+mod rallyhere;
 mod steam;
 mod ugs;
 mod xboxlive;

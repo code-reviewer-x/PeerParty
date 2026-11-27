@@ -551,3 +551,203 @@ fn steam_id_rewrite_rejects_hostile_bytes() {
         let _ = ids::hex_head(b, 8);
     });
 }
+
+/// A random lobby attribute value: text of every size, JSON of the shapes the session
+/// layer reads (some oversized, some of the wrong type), numbers and bytes.
+fn lobby_value(rng: &mut Rng, key: &str) -> peerparty_core::Value {
+    use peerparty_core::Value;
+    let big = |rng: &mut Rng, n: usize| "ab\u{e9}".repeat(n + rng.next() as usize % 50);
+    match rng.next() % 9 {
+        0 => Value::Int(rng.next() as i64),
+        1 => Value::Bool(rng.next() % 2 == 0),
+        2 => Value::Str(String::from_utf8_lossy(&rng.bytes(200)).into_owned()),
+        3 => Value::Str(big(rng, 20_000)),
+        4 => Value::Str(big(rng, 40)),
+        5 => {
+            // A teams list, a custom data map or a players map with too many entries.
+            let n = 1 + rng.next() as usize % 300;
+            let teams: Vec<String> = (0..n).map(|i| format!(r#"{{"team_id":{i},"max_size":{},"players":[]}}"#, rng.next() as i64)).collect();
+            let map: Vec<String> = (0..n).map(|i| format!(r#""{i}{}":"{}""#, "k".repeat(1 + rng.next() as usize % 150), "v".repeat(rng.next() as usize % 2000))).collect();
+            match key {
+                "teams" => Value::Str(format!("[{}]", teams.join(","))),
+                "players" => Value::Str(format!("{{{}}}", map.join(","))),
+                _ => Value::Str(format!(
+                    r#"{{"custom_data":{{{}}},"join_params":{{"custom_data":{{{}}},"public_conn_str":"{}","private_conn_str":5}},"instance_health":"{}"}}"#,
+                    map.join(","),
+                    map.join(","),
+                    "c".repeat(rng.next() as usize % 4000),
+                    "h".repeat(rng.next() as usize % 400)
+                )),
+            }
+        }
+        6 => Value::Str(format!(r#"{{"platform":"{}","input":{},"x":[{}]}}"#, "p".repeat(rng.next() as usize % 1000), rng.next() % 100, "1,".repeat(rng.next() as usize % 500) + "2")),
+        7 => Value::Str(nest("[", "]", 5000)),
+        _ => Value::Str(format!("{}", rng.next())),
+    }
+}
+
+#[test]
+fn rallyhere_sessions_rendered_from_hostile_lobbies_stay_within_bounds() {
+    use crate::rallyhere::session::{NS, browser_entry, render};
+    use peerparty_core::{Attr, Lobby, Member};
+    const KEYS: [&str; 11] = ["type", "region", "created", "joinability", "teams", "browser", "instance", "instance_state", "platform_session", "short_code", "players"];
+    const MEMBER_KEYS: [&str; 5] = ["team", "status", "version", "client_settings", "joined"];
+    let mut rng = Rng(0x1234_5678_9ABC_DEF1);
+    for round in 0..300 {
+        let mut l = Lobby::new(NS);
+        l.id = "i".repeat(rng.next() as usize % 600);
+        for k in KEYS {
+            if rng.next() % 4 != 0 {
+                let value = lobby_value(&mut rng, k);
+                l.attrs.push(Attr { key: k.into(), value, public: true });
+            }
+        }
+        let members = rng.next() as usize % 400;
+        for i in 0..members {
+            let mut attrs = Vec::new();
+            for k in MEMBER_KEYS {
+                if rng.next() % 3 != 0 {
+                    attrs.push(Attr { key: k.into(), value: lobby_value(&mut rng, k), public: true });
+                }
+            }
+            l.members.push(Member { id: PeerId([(i % 200) as u8; 16]), attrs });
+        }
+        let out = catch_unwind(AssertUnwindSafe(|| (render(&l), browser_entry(&l))));
+        let (session, entry) = out.unwrap_or_else(|_| panic!("a hostile lobby (round {round}) panicked"));
+        let teams = session.get("teams").as_arr();
+        assert!(!teams.is_empty() && teams.len() <= 16, "round {round}: {} teams", teams.len());
+        let players: usize = teams.iter().map(|t| t.get("players").as_arr().len()).sum();
+        assert!(players <= 64, "round {round}: {players} players");
+        assert!(teams.iter().all(|t| (0..=64).contains(&t.get("max_size").as_i64().unwrap_or(-1))), "round {round}: a team size over the bound");
+        assert!(session.get("short_code").as_str().is_none_or(|c| c.len() <= 8), "round {round}: short code");
+        for field in ["type", "session_id", "region_id", "created"] {
+            assert!(session.get(field).as_str().is_none_or(|t| t.len() <= 128), "round {round}: {field}");
+        }
+        for t in teams {
+            for p in t.get("players").as_arr() {
+                assert!(["version", "joined"].iter().all(|f| p.get(f).as_str().is_none_or(|t| t.len() <= 128)));
+                let c = p.get("client_settings");
+                assert!(c.as_obj().len() <= 2 && c.as_obj().iter().all(|(_, v)| v.as_str().is_some_and(|v| v.len() <= 128)), "round {round}: client settings");
+            }
+        }
+        let i = session.get("instance");
+        if !i.is_null() {
+            let jp = i.get("join_params");
+            assert!(["public_conn_str", "private_conn_str"].iter().all(|f| jp.get(f).as_str().is_none_or(|t| t.len() <= 512)), "round {round}: connection string");
+            assert!(jp.get("custom_data").as_obj().len() <= 64, "round {round}: instance custom data");
+        }
+        let custom = entry.get("custom_data").as_obj();
+        assert!(custom.len() <= 64 && custom.iter().all(|(k, v)| k.len() <= 64 && v.as_str().is_some_and(|v| v.len() <= 1024)), "round {round}: browser custom data");
+        assert!(entry.get("instance_health").as_str().is_some_and(|h| h.len() <= 128), "round {round}: published health");
+        assert!(entry.get("player_count").as_i64().is_some_and(|n| n <= 64));
+    }
+}
+
+/// Random JSON text of the shapes the RallyHere service answers: objects with the keys the
+/// harvest reads (and others), values of every type and size, nested a few levels.
+fn service_json(rng: &mut Rng, depth: usize) -> String {
+    const KEYS: [&str; 16] = [
+        "templates", "kvs", "regions", "instance", "instance_startup_params", "join_params", "custom_data", "public_conn_str",
+        "region_id", "sort_order", "platform_templates", "num_teams", "joinable", "auto_startup_params", "error_code", "_note",
+    ];
+    let leaf = |rng: &mut Rng| match rng.next() % 8 {
+        0 => "null".to_string(),
+        1 => format!("{}", rng.next() as i64),
+        2 => "true".to_string(),
+        3 => format!("\"{}\"", "v".repeat(rng.next() as usize % 1100)),
+        4 => format!("{:?}", String::from_utf8_lossy(&rng.bytes(40))),
+        5 => "1.5e3".to_string(),
+        6 => "\"\"".to_string(),
+        _ => "-1".to_string(),
+    };
+    if depth == 0 || rng.next() % 4 == 0 {
+        return leaf(rng);
+    }
+    // Past the entry bounds only next to the leaves, so the text stays small.
+    let n = match rng.next() % 6 {
+        0 if depth <= 1 => 260 + rng.next() as usize % 40,
+        _ => rng.next() as usize % 6,
+    };
+    if rng.next() % 3 == 0 {
+        let items: Vec<String> = (0..n).map(|_| service_json(rng, depth - 1)).collect();
+        return format!("[{}]", items.join(","));
+    }
+    let pairs: Vec<String> = (0..n)
+        .map(|i| {
+            let k = if rng.next() % 3 == 0 { format!("k{i}{}", "x".repeat(rng.next() as usize % 1100)) } else { KEYS[rng.next() as usize % KEYS.len()].to_string() };
+            format!("\"{k}\":{}", service_json(rng, depth - 1))
+        })
+        .collect();
+    format!("{{{}}}", pairs.join(","))
+}
+
+#[test]
+fn rallyhere_harvest_rejects_hostile_answers() {
+    use crate::rallyhere::config;
+    use crate::rallyhere::harvest::{MAX_BODY, Resource, filter};
+    const ROUTES: [(&str, &str); 8] = [
+        ("GET", "/session/v1/template"),
+        ("GET", "/config/v2/kv"),
+        ("GET", "/session/v1/regions"),
+        ("GET", "/session/v1/session/s/instance"),
+        ("POST", "/session/v1/session/s/instance"),
+        ("GET", "/session/v1/session/s"),
+        ("PATCH", "/session/v1/session/s"),
+        ("POST", "/session/v1/session/s/player/me"),
+    ];
+    // What is kept is bounded, reads back through config.json's validators, and an
+    // instance keeps no value at all.
+    fn blank(v: &Json) -> bool {
+        match v {
+            Json::Str(s) => s.is_empty(),
+            Json::Obj(p) => p.iter().all(|(_, x)| blank(x)),
+            _ => false,
+        }
+    }
+    let check = |b: &[u8]| {
+        for (m, p) in ROUTES {
+            if let Ok(Some((r, v))) = filter(m, p, b) {
+                assert!(v.to_string().len() <= MAX_BODY, "{p}");
+                let ok = match r {
+                    Resource::Templates => config::templates_value(&v).is_ok(),
+                    Resource::Kv => config::kv_value(&v).is_ok(),
+                    Resource::Regions => config::regions_value(&v).is_ok(),
+                    Resource::Instance => config::instance_value(&v).is_ok() && blank(&v),
+                };
+                assert!(ok, "{p} kept {v}");
+            }
+        }
+    };
+    let mut rng = Rng(0x0BAD_5EED_1234_5678);
+    let mut shaped: Vec<Vec<u8>> = Vec::new();
+    for _ in 0..1500 {
+        let inner = service_json(&mut rng, 4);
+        let wrap = ["templates", "kvs", "regions", "instance", "instance_startup_params", "join_params"][rng.next() as usize % 6];
+        shaped.push(format!("{{\"{wrap}\":{inner}}}").into_bytes());
+        shaped.push(inner.into_bytes());
+    }
+    shaped.push(format!("{{\"kvs\":{{\"a\":\"{}\"}}}}", "x".repeat(MAX_BODY)).into_bytes());
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        survives_with("rallyhere harvest", &shaped, |b| check(b));
+        for text in json_edges() {
+            check(text.as_bytes());
+        }
+    }));
+    assert!(result.is_ok(), "the harvest's filter panicked or kept something it shouldn't");
+    // Deep nesting stays within a small stack.
+    let deep = std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(move || {
+            for n in [MAX_DEPTH - 2, MAX_DEPTH, 20_000] {
+                for wrap in ["{\"templates\":{\"t\":", "{\"instance_startup_params\":{\"m\":", "{\"regions\":[", "{\"kvs\":{\"a\":"] {
+                    let body = format!("{wrap}{}", nest("{\"a\":", "}", n));
+                    for (m, p) in ROUTES {
+                        let _ = filter(m, p, body.as_bytes());
+                    }
+                }
+            }
+        })
+        .unwrap()
+        .join();
+    assert!(deep.is_ok(), "deep nesting overflowed the stack");
+}

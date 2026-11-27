@@ -4,7 +4,10 @@
 //! module has a file of its own, `%LOCALAPPDATA%\peerparty\patterns\<module>.json` (the
 //! module's file name, `MyGame-Win64-Shipping.exe.json`; `PEERPARTY_PATTERNS_DIR` names
 //! another folder), and its patterns are tied to a build by the module's SHA-256 or its
-//! file version. PeerParty only reads these files.
+//! file version. PeerParty only reads these files. A module with no file there falls back to
+//! the launcher's cache of the files fetched from the player's sources
+//! (`%LOCALAPPDATA%\peerparty\remote\patterns`); the player's file always wins, and when
+//! `PEERPARTY_PATTERNS_DIR` is set only that folder is read.
 //!
 //! ```json
 //! { "versions": [
@@ -25,91 +28,50 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 use crate::log;
+#[cfg(test)]
 use crate::sys::scan::Pattern;
-use crate::util::json::Json;
 
-/// A function a hooks file can name.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Function {
-    CurlEasySetopt,
-    CurlEasyCleanup,
-    CurlEasyReset,
+// The file's shape and its parser are shared with the launcher, which checks the files it
+// fetches for the cache with them (protocol/src/gamedata/patterns.rs).
+use peerparty_protocol::gamedata::patterns::MAX_FILE;
+pub use peerparty_protocol::gamedata::patterns::{Function, ModuleHooks, parse};
+
+/// The folders the files are in, in the order they are read: the player's own, then the
+/// launcher's cache of the files fetched from the player's sources
+/// (`%LOCALAPPDATA%\peerparty\remote\patterns`). `PEERPARTY_PATTERNS_DIR` names the only
+/// folder read when it is set.
+fn dirs() -> Vec<PathBuf> {
+    dirs_of(super::HookConfig::global().patterns_dir.clone(), crate::util::local_store::peerparty_dir())
 }
 
-impl Function {
-    /// Its key in an entry, and its name in the log.
-    const ALL: [(Function, &'static str, &'static str); 3] = [
-        (Function::CurlEasySetopt, "curl_easy_setopt_patterns", "curl_easy_setopt"),
-        (Function::CurlEasyCleanup, "curl_easy_cleanup_patterns", "curl_easy_cleanup"),
-        (Function::CurlEasyReset, "curl_easy_reset_patterns", "curl_easy_reset"),
-    ];
-
-    pub fn name(self) -> &'static str {
-        Function::ALL.iter().find(|(f, _, _)| *f == self).map_or("?", |(_, _, n)| n)
+fn dirs_of(named: Option<PathBuf>, peerparty: Option<PathBuf>) -> Vec<PathBuf> {
+    if let Some(d) = named {
+        return vec![d];
     }
-}
-
-/// One entry of a module's file: the build it's for, and its patterns.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct ModuleHooks {
-    /// Lowercase hex.
-    pub sha256: Option<String>,
-    pub file_version: Option<String>,
-    pub functions: Vec<(Function, Vec<Pattern>)>,
-}
-
-impl ModuleHooks {
-    pub fn patterns(&self, f: Function) -> &[Pattern] {
-        self.functions.iter().find(|(g, _)| *g == f).map_or(&[], |(_, p)| p)
-    }
-
-    /// How sure a match is: 2 by SHA-256, 1 by version, 0 for any build.
-    fn rank(&self) -> u8 {
-        if self.sha256.is_some() {
-            2
-        } else {
-            u8::from(self.file_version.is_some())
-        }
-    }
-}
-
-/// The files are the player's own, but bounded all the same: one this big or entries
-/// this many are a mistake, not a configuration.
-const MAX_FILE: u64 = 1 << 20;
-const MAX_ENTRIES: usize = 64;
-const MAX_PATTERNS: usize = 16;
-
-/// The folder the files are in.
-fn dir() -> Option<PathBuf> {
-    super::HookConfig::global().patterns_dir.clone().or_else(|| Some(crate::util::local_store::peerparty_dir()?.join("patterns")))
+    let Some(base) = peerparty else { return Vec::new() };
+    vec![base.join("patterns"), base.join("remote").join("patterns")]
 }
 
 /// The entry for the module loaded at `base` from `path`, named `name`, if its file
 /// has one for this build. The module's SHA-256 is only worked out when an entry names
 /// one, or to say in the log what an entry would need.
 pub fn for_module(name: &str, base: usize, path: &str) -> Option<ModuleHooks> {
-    for_module_in(&dir()?, name, base, path)
+    for_module_in(&dirs(), name, base, path)
 }
 
-fn for_module_in(dir: &Path, name: &str, base: usize, path: &str) -> Option<ModuleHooks> {
+/// The first of `dirs` that holds a usable file for the module is the one read, whatever it
+/// has for this build: a player's file wins over the cache's, and a build only the cache
+/// knows gets no entry from the cache when the player's file doesn't have it. A file that is
+/// too big, unreadable or has no usable entry counts as absent (and says so in the log).
+fn for_module_in(dirs: &[PathBuf], name: &str, base: usize, path: &str) -> Option<ModuleHooks> {
     // A loader name is a file name; anything else can't name a file of ours.
     if name.is_empty() || name.contains(['/', '\\', ':']) || name.starts_with('.') {
         return None;
     }
-    let file = dir.join(format!("{name}.json"));
-    let size = std::fs::metadata(&file).ok().filter(|m| m.is_file())?.len();
-    if size > MAX_FILE {
-        log!("hooks: {} is over {MAX_FILE} bytes; not read", file.display());
-        return None;
-    }
-    let Ok(text) = std::fs::read_to_string(&file) else {
-        log!("hooks: {} can't be read", file.display());
-        return None;
-    };
-    let (entries, problems) = parse(&text);
-    for p in &problems {
-        log!("hooks: {}: {p}", file.display());
-    }
+    let (file, entries) = dirs.iter().find_map(|dir| {
+        let file = dir.join(format!("{name}.json"));
+        read_entries(&file).map(|e| (file, e))
+    })?;
     let version = unsafe { crate::sys::pe::file_version(base as *const u8) };
     let mut hash = None;
     let mut sha = || hash.get_or_insert_with(|| sha256_of(Path::new(path))).clone();
@@ -132,6 +94,28 @@ fn for_module_in(dir: &Path, name: &str, base: usize, path: &str) -> Option<Modu
             None
         }
     }
+}
+
+/// The entries of the file at `file`: None when there is no such file or it can't be used
+/// (the log says why). The file is untrusted, wherever it is: bounded and parsed the same.
+fn read_entries(file: &Path) -> Option<Vec<ModuleHooks>> {
+    let size = std::fs::metadata(file).ok().filter(|m| m.is_file())?.len();
+    if size > MAX_FILE {
+        log!("hooks: {} is over {MAX_FILE} bytes; not read", file.display());
+        return None;
+    }
+    let Ok(text) = std::fs::read_to_string(file) else {
+        log!("hooks: {} can't be read", file.display());
+        return None;
+    };
+    let (entries, problems) = parse(&text);
+    for p in &problems {
+        log!("hooks: {}: {p}", file.display());
+    }
+    if entries.is_empty() {
+        return None;
+    }
+    Some(entries)
 }
 
 /// The entry that applies (its index), for a module with `version` and the SHA-256
@@ -172,78 +156,6 @@ fn sha256_of(path: &Path) -> Option<String> {
         hasher.update(&buf[..n]);
     }
     Some(crate::util::encoding::hex(&hasher.finalize()))
-}
-
-/// A file's entries, and what in it was left out and why.
-pub fn parse(text: &str) -> (Vec<ModuleHooks>, Vec<String>) {
-    let mut problems = Vec::new();
-    let Some(root) = Json::parse(text.trim_start_matches('\u{feff}')) else {
-        return (Vec::new(), vec!["not JSON".into()]);
-    };
-    let mut out: Vec<ModuleHooks> = Vec::new();
-    for (n, entry) in root.get("versions").as_arr().iter().enumerate() {
-        let at = format!("versions[{n}]");
-        if out.len() == MAX_ENTRIES {
-            problems.push(format!("more than {MAX_ENTRIES} entries; the rest are left out"));
-            break;
-        }
-        let mut hooks = ModuleHooks::default();
-        let mut usable = true;
-        for (key, value) in entry.as_obj() {
-            if key.starts_with('_') {
-                continue;
-            }
-            if key == "sha256" {
-                match value.as_str().map(|s| s.trim().to_ascii_lowercase()) {
-                    Some(h) if h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()) => hooks.sha256 = Some(h),
-                    _ => {
-                        problems.push(format!("{at}: sha256 isn't 64 hex digits"));
-                        usable = false;
-                    }
-                }
-                continue;
-            }
-            if key == "file_version" {
-                match value.as_str().map(str::trim).filter(|v| !v.is_empty()) {
-                    Some(v) => hooks.file_version = Some(v.to_string()),
-                    None => {
-                        problems.push(format!("{at}: file_version isn't a version"));
-                        usable = false;
-                    }
-                }
-                continue;
-            }
-            let Some((f, _, _)) = Function::ALL.iter().find(|(_, k, _)| *k == key) else {
-                problems.push(format!("{at}: unknown key {key:?}"));
-                continue;
-            };
-            let mut patterns = Vec::new();
-            for (i, p) in value.as_arr().iter().enumerate() {
-                if patterns.len() == MAX_PATTERNS {
-                    problems.push(format!("{at}: {key}: more than {MAX_PATTERNS} patterns; the rest are left out"));
-                    break;
-                }
-                match p.as_str().map(Pattern::parse) {
-                    Some(Ok(p)) => patterns.push(p),
-                    Some(Err(e)) => problems.push(format!("{at}: {key}[{i}]: {e}")),
-                    None => problems.push(format!("{at}: {key}[{i}] is not a string")),
-                }
-            }
-            if !patterns.is_empty() {
-                hooks.functions.push((*f, patterns));
-            }
-        }
-        // An entry whose build can't be told is never used: it would apply to every build.
-        if usable && !hooks.functions.is_empty() {
-            out.push(hooks);
-        } else if usable {
-            problems.push(format!("{at}: no usable pattern"));
-        }
-    }
-    if out.is_empty() && root.get("versions").as_arr().is_empty() {
-        problems.push("no \"versions\" list".into());
-    }
-    (out, problems)
 }
 
 #[cfg(test)]
@@ -351,13 +263,67 @@ mod tests {
         let p = |byte: &str| Some(Pattern::parse(&format!("{byte} 01 02 03 04 05")).unwrap());
         let by_version = |v: &str| format!(r#""file_version": "{v}","#);
         write(&[e(by_version("0.0.0.1"), "AA"), e(by_version(&version), "BB"), e(String::new(), "CC")]);
-        assert_eq!(first(for_module_in(&dir, "kernel32.dll", base, path)), p("BB"));
+        assert_eq!(first(for_module_in(std::slice::from_ref(&dir), "kernel32.dll", base, path)), p("BB"));
         write(&[e(by_version(&version), "BB"), e(format!(r#""sha256": "{}","#, hash.to_uppercase()), "DD")]);
-        assert_eq!(first(for_module_in(&dir, "kernel32.dll", base, path)), p("DD"));
+        assert_eq!(first(for_module_in(std::slice::from_ref(&dir), "kernel32.dll", base, path)), p("DD"));
         write(&[e(by_version("0.0.0.1"), "AA")]);
-        assert_eq!(for_module_in(&dir, "kernel32.dll", base, path), None);
-        assert_eq!(for_module_in(&dir, "user32.dll", base, path), None, "no file");
+        assert_eq!(for_module_in(std::slice::from_ref(&dir), "kernel32.dll", base, path), None);
+        assert_eq!(for_module_in(std::slice::from_ref(&dir), "user32.dll", base, path), None, "no file");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn temp(tag: &str) -> PathBuf {
+        let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let d = std::env::temp_dir().join(format!("peerparty-hooks-{tag}-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// A file of one catch-all entry whose setopt pattern starts with `byte`.
+    fn file_of(byte: &str) -> String {
+        format!(r#"{{"versions": [{{ "curl_easy_setopt_patterns": [ "{byte} 01 02 03 04 05" ] }}]}}"#)
+    }
+
+    fn first_byte(m: Option<ModuleHooks>) -> Option<Pattern> {
+        m.map(|m| m.patterns(Function::CurlEasySetopt)[0].clone())
+    }
+
+    #[test]
+    fn the_players_file_wins_over_the_cached_one() {
+        let (local, cache) = (temp("local"), temp("cache"));
+        let dirs = [local.clone(), cache.clone()];
+        let p = |byte: &str| Some(Pattern::parse(&format!("{byte} 01 02 03 04 05")).unwrap());
+        let read = || first_byte(for_module_in(&dirs, "game.exe", 0, ""));
+        assert_eq!(read(), None, "neither has a file");
+        std::fs::write(cache.join("game.exe.json"), file_of("CC")).unwrap();
+        assert_eq!(read(), p("CC"), "the cache alone is used");
+        std::fs::write(local.join("game.exe.json"), file_of("AA")).unwrap();
+        assert_eq!(read(), p("AA"), "the player's file wins");
+        // A player's file that can't be used counts as absent.
+        std::fs::write(local.join("game.exe.json"), "not json").unwrap();
+        assert_eq!(read(), p("CC"));
+        std::fs::write(local.join("game.exe.json"), vec![b' '; MAX_FILE as usize + 1]).unwrap();
+        assert_eq!(read(), p("CC"), "an oversized player's file is not read");
+        // A cached file is bounded like any other.
+        std::fs::remove_file(local.join("game.exe.json")).unwrap();
+        std::fs::write(cache.join("game.exe.json"), vec![b' '; MAX_FILE as usize + 1]).unwrap();
+        assert_eq!(read(), None, "an oversized cached file is refused");
+        std::fs::write(cache.join("game.exe.json"), r#"{"versions": [{"curl_easy_setopt_patterns": ["zz"]}]}"#).unwrap();
+        assert_eq!(read(), None, "a cached file with no usable entry is refused");
+        // A valid file of the player's that has nothing for this build is still the file read.
+        std::fs::write(cache.join("game.exe.json"), file_of("CC")).unwrap();
+        std::fs::write(local.join("game.exe.json"), r#"{"versions": [{"file_version": "0.0.0.1", "curl_easy_setopt_patterns": ["AA 01 02 03 04 05"]}]}"#).unwrap();
+        assert_eq!(read(), None, "the player's file is the one read, even without an entry for the build");
+        let _ = std::fs::remove_dir_all(&local);
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    #[test]
+    fn a_named_folder_is_the_only_one_read() {
+        let base = PathBuf::from(r"C:\pp");
+        assert_eq!(dirs_of(Some(PathBuf::from(r"C:\own")), Some(base.clone())), [PathBuf::from(r"C:\own")]);
+        assert_eq!(dirs_of(None, Some(base.clone())), [base.join("patterns"), base.join("remote").join("patterns")]);
+        assert!(dirs_of(None, None).is_empty());
     }
 
     #[test]

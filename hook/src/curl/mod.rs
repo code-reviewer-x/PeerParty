@@ -23,6 +23,13 @@
 //! PeerParty runs (`PEERPARTY_SKIP=curl` turns that off), its bodies only wrapped for
 //! the trace. A path to an Xbox Live host may name the player making it
 //! (xboxlive/mod.rs `own_xuid_in`).
+//!
+//! With the RallyHere layer in official mode (rallyhere/harvest.rs), the bodies are also
+//! wrapped without the trace, and the answer of a call to one of the title's routes that
+//! hold title data is kept (up to `harvest::MAX_BODY`, other calls' bodies not at all) and
+//! handed to the harvest once the call is over: at `curl_easy_cleanup`, at
+//! `curl_easy_reset`, or when the handle, used again, is given its next URL or method.
+//! curl's status code isn't read; the harvest goes by the body's shape.
 
 pub mod tls;
 
@@ -47,6 +54,7 @@ const OPT_CUSTOMREQUEST: u32 = 10036;
 const OPT_UPLOAD: u32 = 46;
 const OPT_POST: u32 = 47;
 const OPT_NOBODY: u32 = 44;
+const OPT_HTTPGET: u32 = 80;
 const OPT_WRITEFUNCTION: u32 = 20011;
 const OPT_READFUNCTION: u32 = 20012;
 /// A URL given as a `CURLU` handle: its host can't be read here.
@@ -56,6 +64,9 @@ const OPT_CURLU: u32 = 10282;
 const BAD_ARGUMENT: u32 = 43;
 
 const BODY_MAX: usize = 4096;
+/// The most of an answer kept for the harvest: one byte over its bound, so a longer one is
+/// seen as too long rather than cut.
+const HARVEST_MAX: usize = crate::rallyhere::harvest::MAX_BODY + 1;
 /// The longest URL read from the game.
 const URL_MAX: usize = 8192;
 /// Requests remembered at most, for a curl whose cleanup isn't hooked.
@@ -118,9 +129,50 @@ static HOOKED: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 #[derive(Default)]
 struct Call {
     url: String,
-    method: &'static str,
+    /// The method the request options make: the last of `CURLOPT_POST`, `_UPLOAD`,
+    /// `_NOBODY` set (`HTTPGET`, or the same one turned off, goes back to GET); empty for GET.
+    base: &'static str,
+    /// `CURLOPT_CUSTOMREQUEST`, which wins over `base`.
+    custom: Option<&'static str>,
     sent: Vec<u8>,
     got: Vec<u8>,
+    /// Its answer goes to the RallyHere harvest (`harvest::watches`).
+    harvest: bool,
+}
+
+impl Call {
+    fn method(&self) -> &'static str {
+        self.custom.unwrap_or(if self.base.is_empty() { "GET" } else { self.base })
+    }
+
+    /// Whether the call went out: a body was sent or received.
+    fn done(&self) -> bool {
+        !self.sent.is_empty() || !self.got.is_empty()
+    }
+
+    /// A handle used again: once its call went out, the next option set is for the next
+    /// call, which starts with the handle's options (its URL and method stay). The call
+    /// that is over.
+    fn next(&mut self) -> Option<Call> {
+        if !self.done() {
+            return None;
+        }
+        let next = Call { url: self.url.clone(), base: self.base, custom: self.custom, harvest: self.harvest, ..Call::default() };
+        Some(std::mem::replace(self, next))
+    }
+}
+
+/// A `CURLOPT_CUSTOMREQUEST` method, as the trace names it.
+fn custom_method(value: usize) -> &'static str {
+    match crate::sys::read::cstr(value).unwrap_or_default().to_ascii_uppercase().as_str() {
+        "GET" => "GET",
+        "DELETE" => "DELETE",
+        "PUT" => "PUT",
+        "PATCH" => "PATCH",
+        "POST" => "POST",
+        "HEAD" => "HEAD",
+        _ => "OTHER",
+    }
 }
 
 /// One direction (read or write) of a handle's body callback: what the game set.
@@ -376,6 +428,9 @@ unsafe extern "C" fn setopt<const I: usize>(h: usize, option: u32, value: usize,
     // A replacement for a string option, kept alive until curl has copied it.
     let mut text_value = None;
     let url = (option == OPT_URL && value != 0).then(|| crate::sys::read::utf8(value, URL_MAX).unwrap_or_default());
+    let body_opt = matches!(option, OPT_READFUNCTION | OPT_WRITEFUNCTION | OPT_READDATA | OPT_WRITEDATA);
+    let harvesting = (url.is_some() || body_opt) && crate::rallyhere::harvest::active();
+    let watched = harvesting && url.as_deref().is_some_and(|u| crate::rallyhere::harvest::watches(&host_of(u), split_url(u).1));
     if kind != Kind::XCurl {
         if let Some(url) = &url {
             certificates(copy, h, url);
@@ -394,6 +449,7 @@ unsafe extern "C" fn setopt<const I: usize>(h: usize, option: u32, value: usize,
         }
     }
     let mut also = None;
+    let mut over = None;
     {
         let mut calls = crate::sys::lock(&CALLS);
         let c = &mut *calls;
@@ -403,26 +459,34 @@ unsafe extern "C" fn setopt<const I: usize>(h: usize, option: u32, value: usize,
         match option {
             OPT_URL if value != 0 => {
                 let call = c.by_handle.entry(h).or_default();
-                if call.method.is_empty() {
-                    call.method = "GET";
-                }
+                over = call.next();
                 call.url = url.unwrap_or_default();
+                call.harvest = watched;
             }
-            OPT_CUSTOMREQUEST if value != 0 => {
-                let m = crate::sys::read::cstr(value).unwrap_or_default().to_ascii_uppercase();
-                c.by_handle.entry(h).or_default().method = match m.as_str() {
-                    "DELETE" => "DELETE",
-                    "PUT" => "PUT",
-                    "PATCH" => "PATCH",
-                    "POST" => "POST",
-                    "HEAD" => "HEAD",
-                    _ => "OTHER",
-                };
+            OPT_CUSTOMREQUEST | OPT_POST | OPT_UPLOAD | OPT_NOBODY | OPT_HTTPGET => {
+                let call = c.by_handle.entry(h).or_default();
+                over = call.next();
+                let on = value != 0;
+                match option {
+                    // NULL: back to the method the other options make.
+                    OPT_CUSTOMREQUEST => call.custom = on.then(|| custom_method(value)),
+                    OPT_HTTPGET if on => call.base = "",
+                    OPT_HTTPGET => {}
+                    _ => {
+                        let m = match option {
+                            OPT_POST => "POST",
+                            OPT_UPLOAD => "PUT",
+                            _ => "HEAD",
+                        };
+                        if on {
+                            call.base = m;
+                        } else if call.base == m {
+                            call.base = "";
+                        }
+                    }
+                }
             }
-            OPT_POST if value != 0 => c.by_handle.entry(h).or_default().method = "POST",
-            OPT_UPLOAD if value != 0 => c.by_handle.entry(h).or_default().method = "PUT",
-            OPT_NOBODY if value != 0 => c.by_handle.entry(h).or_default().method = "HEAD",
-            OPT_READFUNCTION | OPT_WRITEFUNCTION | OPT_READDATA | OPT_WRITEDATA if trace() => {
+            _ if body_opt && (harvesting || trace()) => {
                 let slot: &'static Slot = c.slots.entry(h).or_insert_with(|| new_slot(h));
                 let write = matches!(option, OPT_WRITEFUNCTION | OPT_WRITEDATA);
                 let func = matches!(option, OPT_READFUNCTION | OPT_WRITEFUNCTION);
@@ -430,6 +494,9 @@ unsafe extern "C" fn setopt<const I: usize>(h: usize, option: u32, value: usize,
             }
             _ => {}
         }
+    }
+    if let Some(call) = over {
+        finish(copy, kind, call);
     }
     if let Some((opt, v)) = also {
         unsafe { hook.call(h, opt, v, 0) };
@@ -489,8 +556,16 @@ fn original(data: usize, write: bool) -> Option<(usize, DataFn, usize)> {
 fn keep(h: usize, bytes: &[u8], write: bool) {
     let mut calls = crate::sys::lock(&CALLS);
     if let Some(call) = calls.by_handle.get_mut(&h) {
+        // The harvest takes answers only; without the trace nothing else is kept.
+        let max = if call.harvest && write {
+            HARVEST_MAX
+        } else if trace() {
+            BODY_MAX
+        } else {
+            0
+        };
         let buf = if write { &mut call.got } else { &mut call.sent };
-        let room = BODY_MAX.saturating_sub(buf.len());
+        let room = max.saturating_sub(buf.len());
         buf.extend_from_slice(&bytes[..bytes.len().min(room)]);
     }
 }
@@ -518,24 +593,28 @@ unsafe extern "C" fn write_wrap(buf: *mut u8, size: usize, n: usize, data: usize
 }
 
 /// `curl_easy_reset`: every option back to curl's default, so nothing is wrapped or
-/// pinned.
+/// pinned, and the handle's last call is over.
 unsafe extern "C" fn reset<const I: usize>(h: usize) {
-    {
+    let call = {
         let mut calls = crate::sys::lock(&CALLS);
         if let Some(slot) = calls.slots.get(&h) {
             *crate::sys::lock(&slot.read) = Side::default();
             *crate::sys::lock(&slot.write) = Side::default();
         }
-        calls.by_handle.remove(&h);
-    }
+        calls.by_handle.remove(&h)
+    };
     crate::sys::lock(&TLS).forget(h);
+    if let Some(call) = call.filter(Call::done) {
+        let copy = &COPIES[I];
+        finish(copy, copy.kind().unwrap_or(Kind::XCurl), call);
+    }
     if let Some(hook) = COPIES[I].reset.get() {
         unsafe { hook.call(h) }
     }
 }
 
 fn text(bytes: &[u8]) -> String {
-    let s = String::from_utf8_lossy(bytes).replace(['\r', '\n'], " ");
+    let s = String::from_utf8_lossy(&bytes[..bytes.len().min(BODY_MAX)]).replace(['\r', '\n'], " ");
     if bytes.len() >= BODY_MAX { format!("{s}...") } else { s }
 }
 
@@ -551,23 +630,34 @@ unsafe extern "C" fn cleanup<const I: usize>(h: usize) {
         calls.by_handle.remove(&h)
     };
     crate::sys::lock(&TLS).forget(h);
-    if let Some(call) = call.filter(|c| traced(kind, &c.url)) {
-        let (host, path) = split_url(&call.url);
+    if let Some(call) = call {
+        finish(copy, kind, call);
+    }
+    if let Some(hook) = copy.cleanup.get() {
+        unsafe { hook.call(h) }
+    }
+}
+
+/// A call that is over: logged when traced, its answer handed to the harvest when held for it.
+fn finish(copy: &Copy, kind: Kind, call: Call) {
+    let (host, path) = split_url(&call.url);
+    let method = call.method();
+    if traced(kind, &call.url) {
         if let Some(x) = crate::xboxlive::own_xuid_in(host, path) {
             crate::xboxlive::learn(x);
         }
         if trace() {
-            log!("http-trace {} {} {} sent {} got {}", copy.label(), call.method, call.url, text(&call.sent), text(&call.got));
+            log!("http-trace {} {} {} sent {} got {}", copy.label(), method, call.url, text(&call.sent), text(&call.got));
         } else {
             let host = host_of(&call.url);
             let shape = crate::xboxlive::shape(path);
-            crate::log::throttled(&format!("curl {} {} {host}{shape}", copy.label(), call.method), 2, |n| {
-                log!("curl {} {} https://{host}{shape} n={n}", copy.label(), call.method);
+            crate::log::throttled(&format!("curl {} {} {host}{shape}", copy.label(), method), 2, |n| {
+                log!("curl {} {} https://{host}{shape} n={n}", copy.label(), method);
             });
         }
     }
-    if let Some(hook) = copy.cleanup.get() {
-        unsafe { hook.call(h) }
+    if call.harvest {
+        crate::rallyhere::harvest::observed(method, path, &call.got);
     }
 }
 
@@ -729,5 +819,170 @@ mod tests {
         let s = new_slot(3);
         assert_eq!(body_option(s, false, false, 0x3333), (0x3333, None));
         assert!(original(ours(s), false).is_none());
+    }
+
+    /// The fake curl's options as it was given them: (handle, option, value).
+    static FAKE: Mutex<Vec<(usize, u32, usize)>> = Mutex::new(Vec::new());
+
+    /// A curl that only notes its options, with a prologue long enough for a detour.
+    #[inline(never)]
+    unsafe extern "C" fn fake_setopt(h: usize, option: u32, value: usize, high: usize) -> u32 {
+        let (h, option, value) = (std::hint::black_box(h), std::hint::black_box(option), std::hint::black_box(value));
+        let _ = std::hint::black_box(high);
+        crate::sys::lock(&FAKE).push((h, option, value));
+        0
+    }
+
+    #[inline(never)]
+    unsafe extern "C" fn fake_cleanup(h: usize) {
+        let h = std::hint::black_box(h);
+        crate::sys::lock(&FAKE).retain(|(x, _, _)| *x != h);
+    }
+
+    /// `curl_easy_reset`: the handle's options go, the handle stays.
+    #[inline(never)]
+    unsafe extern "C" fn fake_reset(h: usize) {
+        let h = std::hint::black_box(h);
+        let mut fake = crate::sys::lock(&FAKE);
+        fake.retain(|(x, _, _)| *x != h);
+        fake.shrink_to_fit();
+    }
+
+    /// What the fake curl holds for `h`'s `option`.
+    fn fake_value(h: usize, option: u32) -> Option<usize> {
+        crate::sys::lock(&FAKE).iter().rev().find(|(x, o, _)| *x == h && *o == option).map(|(_, _, v)| *v)
+    }
+
+    const GAME_DATA: usize = 0x6A3E;
+
+    /// The game's write callback: takes everything when given its own data pointer.
+    unsafe extern "C" fn game_sink(_: *mut u8, size: usize, n: usize, data: usize) -> usize {
+        if data == GAME_DATA { size * n } else { 0 }
+    }
+
+    /// The fake curl answering `h`'s call: `body` through the write callback it holds, in pieces.
+    fn answer(h: usize, body: &[u8]) {
+        let f = unsafe { std::mem::transmute::<usize, DataFn>(fake_value(h, OPT_WRITEFUNCTION).unwrap()) };
+        let data = fake_value(h, OPT_WRITEDATA).unwrap();
+        for piece in body.chunks(10) {
+            assert_eq!(unsafe { f(piece.as_ptr() as *mut u8, 1, piece.len(), data) }, piece.len(), "the game's callback got its data");
+        }
+    }
+
+    /// A fake curl hooked as any curl is, called the way a game calls it, with the
+    /// RallyHere layer in official mode for `api.example.test` (on this thread): the
+    /// answers of its title-data routes reach the harvest's files once each call is over;
+    /// another route's or another host's answer is not held or written.
+    #[test]
+    fn an_official_call_to_the_title_reaches_the_harvest_through_the_hooked_curl() {
+        let dir = crate::rallyhere::tests_support::temp_dir("curl-harvest");
+        crate::rallyhere::harvest::TEST.with(|t| *t.borrow_mut() = Some(("api.example.test".into(), dir.clone())));
+        let hooked = install(Kind::Library, "fake-curl.dll", fake_setopt as SetOpt as usize, fake_cleanup as Cleanup as usize, fake_reset as Cleanup as usize, false);
+        assert_eq!(hooked, 3, "setopt, cleanup and reset");
+        let setopt = std::hint::black_box(fake_setopt as SetOpt);
+        let cleanup = std::hint::black_box(fake_cleanup as Cleanup);
+        let reset = std::hint::black_box(fake_reset as Cleanup);
+        let method = |h: usize| crate::sys::lock(&CALLS).by_handle.get(&h).map(Call::method);
+        let custom = |h: usize, m: Option<&std::ffi::CStr>| unsafe { setopt(h, OPT_CUSTOMREQUEST, m.map_or(0, |m| m.as_ptr() as usize), 0) };
+        let start = |h: usize, url: &str| {
+            let url = CString::new(url).unwrap();
+            unsafe {
+                setopt(h, OPT_WRITEFUNCTION, game_sink as DataFn as usize, 0);
+                setopt(h, OPT_WRITEDATA, GAME_DATA, 0);
+                setopt(h, OPT_URL, url.as_ptr() as usize, 0);
+            }
+        };
+
+        let h = 0x7E57_0001;
+        start(h, "https://api.example.test/session/v1/template");
+        assert_eq!(fake_value(h, OPT_WRITEFUNCTION), Some(write_wrap as DataFn as usize), "curl was given the wrapper");
+        answer(h, br#"{"templates":{"example_party":{"joinable":true,"owner":"someone"}}}"#);
+        assert!(!dir.join("template.json").exists(), "not before the call is over");
+        unsafe { cleanup(h) };
+        assert_eq!(std::fs::read_to_string(dir.join("template.json")).unwrap(), r#"{"example_party":{"joinable":true}}"#);
+
+        // A handle used again: its first call is over when it is given its next URL.
+        let h = 0x7E57_0002;
+        start(h, "https://api.example.test/config/v2/kv");
+        answer(h, br#"{"kvs":{"motd":"hello"},"kick_before_hint":"2020-01-01T00:00:00Z"}"#);
+        let login = CString::new("https://api.example.test/users/v1/login").unwrap();
+        unsafe { setopt(h, OPT_URL, login.as_ptr() as usize, 0) };
+        assert_eq!(std::fs::read_to_string(dir.join("kv.json")).unwrap(), r#"{"motd":"hello"}"#);
+        // Sign-in holds no title data: its answer isn't even held.
+        answer(h, br#"{"access_token":"made-up"}"#);
+        assert!(crate::sys::lock(&CALLS).by_handle.get(&h).is_some_and(|c| !c.harvest && c.got.is_empty()));
+        unsafe { cleanup(h) };
+
+        // Another host isn't watched.
+        let h = 0x7E57_0003;
+        start(h, "https://other.example.test/config/v2/kv");
+        answer(h, br#"{"kvs":{"motd":"other"}}"#);
+        unsafe { cleanup(h) };
+        assert_eq!(std::fs::read_to_string(dir.join("kv.json")).unwrap(), r#"{"motd":"hello"}"#);
+
+        // curl_easy_reset ends the handle's call.
+        let h = 0x7E57_0004;
+        start(h, "https://api.example.test/session/v1/regions");
+        answer(h, br#"{"regions":[{"region_id":"eu","ping_host":"x"}],"cursor":0}"#);
+        assert!(!dir.join("regions.json").exists());
+        unsafe { reset(h) };
+        assert_eq!(std::fs::read_to_string(dir.join("regions.json")).unwrap(), r#"[{"region_id":"eu"}]"#);
+        unsafe { cleanup(h) };
+
+        // A POST to a read-only route isn't taken; CURLOPT_HTTPGET makes the handle's call a GET again.
+        let h = 0x7E57_0005;
+        unsafe { setopt(h, OPT_POST, 1, 0) };
+        start(h, "https://api.example.test/config/v2/kv");
+        answer(h, br#"{"kvs":{"motd":"posted"}}"#);
+        unsafe { cleanup(h) };
+        assert_eq!(std::fs::read_to_string(dir.join("kv.json")).unwrap(), r#"{"motd":"hello"}"#);
+        let h = 0x7E57_0006;
+        unsafe {
+            setopt(h, OPT_POST, 1, 0);
+            setopt(h, OPT_HTTPGET, 1, 0);
+        }
+        start(h, "https://api.example.test/config/v2/kv");
+        assert_eq!(method(h), Some("GET"));
+        answer(h, br#"{"kvs":{"motd":"again"}}"#);
+        unsafe { cleanup(h) };
+        assert_eq!(std::fs::read_to_string(dir.join("kv.json")).unwrap(), r#"{"motd":"again"}"#);
+
+        // A handle used again with only a new method: the GET that went out is over first,
+        // and the PATCH that follows (same URL) is its own call.
+        let h = 0x7E57_0007;
+        start(h, "https://api.example.test/session/v1/template");
+        answer(h, br#"{"templates":{"example_match":{"num_teams":2}}}"#);
+        let patch = CString::new("PATCH").unwrap();
+        custom(h, Some(&patch));
+        assert_eq!(std::fs::read_to_string(dir.join("template.json")).unwrap(), r#"{"example_match":{"num_teams":2}}"#);
+        assert_eq!(method(h), Some("PATCH"));
+        answer(h, br#"{"templates":{"example_other":{}}}"#);
+        unsafe { cleanup(h) };
+        assert_eq!(std::fs::read_to_string(dir.join("template.json")).unwrap(), r#"{"example_match":{"num_teams":2}}"#, "a PATCH isn't taken");
+
+        // Turning a method option off goes back to the method the others make.
+        let h = 0x7E57_0008;
+        let delete = CString::new("delete").unwrap();
+        custom(h, Some(&delete));
+        assert_eq!(method(h), Some("DELETE"));
+        custom(h, None);
+        assert_eq!(method(h), Some("GET"));
+        for (opt, m) in [(OPT_POST, "POST"), (OPT_NOBODY, "HEAD"), (OPT_UPLOAD, "PUT")] {
+            unsafe { setopt(h, opt, 1, 0) };
+            assert_eq!(method(h), Some(m));
+            unsafe { setopt(h, opt, 0, 0) };
+            assert_eq!(method(h), Some("GET"));
+        }
+        unsafe { setopt(h, OPT_UPLOAD, 1, 0) };
+        custom(h, Some(&patch));
+        assert_eq!(method(h), Some("PATCH"), "a custom request wins");
+        unsafe { cleanup(h) };
+
+        let mut names: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        assert_eq!(names, ["kv.json", "regions.json", "template.json"]);
+
+        crate::rallyhere::harvest::TEST.with(|t| *t.borrow_mut() = None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

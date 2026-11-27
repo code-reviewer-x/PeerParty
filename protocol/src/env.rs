@@ -98,6 +98,10 @@ pub const PLAYFAB: &str = "PEERPARTY_PLAYFAB";
 pub const PLAYFAB_DIR: &str = "PEERPARTY_PLAYFAB_DIR";
 pub const UGS: &str = "PEERPARTY_UGS";
 pub const UGS_DIR: &str = "PEERPARTY_UGS_DIR";
+pub const RALLYHERE: &str = "PEERPARTY_RALLYHERE";
+/// The hosts of the game's RallyHere API, comma separated: in place of the config file's.
+pub const RALLYHERE_HOSTS: &str = "PEERPARTY_RALLYHERE_HOSTS";
+pub const RALLYHERE_DIR: &str = "PEERPARTY_RALLYHERE_DIR";
 pub const GALAXY_DIR: &str = "PEERPARTY_GALAXY_DIR";
 pub const DEMONWARE: &str = "PEERPARTY_DEMONWARE";
 pub const DEMONWARE_DIR: &str = "PEERPARTY_DEMONWARE_DIR";
@@ -171,6 +175,11 @@ pub const TEST_ARGV: &str = "PEERPARTY_TEST_ARGV";
 pub const SESSION_HIDDEN: &str = "PEERPARTY_SESSION_HIDDEN";
 /// Where the core's integration tests log.
 pub const TEST_LOG: &str = "PEERPARTY_TEST_LOG";
+/// The game data sources for this run (launcher/src/sources.rs): base addresses, `https://`
+/// only, separated by `;`, in the order they are asked. Set, even empty, it replaces
+/// Settings' list; `--data-source` replaces both. On Linux the launcher hands its list to
+/// Windows' peerparty.exe inside Proton through it.
+pub const DATA_SOURCES: &str = "PEERPARTY_DATA_SOURCES";
 
 // --- Build time (launcher/build.rs, tools/) ----------------------------------------------
 

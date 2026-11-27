@@ -1,0 +1,25 @@
+{
+  "_note": "Made-up values. Replace the hosts, templates and defaults with the title's own.",
+  "hosts": ["api.example-game.invalid"],
+  "templates": {
+    "example_party": {
+      "engine_session_type": "example_party",
+      "can_join_matchmaking": true,
+      "can_be_created_by_players_directly": true,
+      "notify_on_reservation": false
+    },
+    "example_match": {
+      "engine_session_type": "example_match",
+      "can_be_created_by_players_directly": true,
+      "players_per_team": 4,
+      "platform_templates": {
+        "Steam": { "platform_id": 5, "platform": "Steam", "platform_session_type": "example_match" }
+      }
+    }
+  },
+  "kv": { "example_motd": "Welcome to the example title" },
+  "instance": {
+    "instance_startup_params": { "map": "", "mode": "", "misc_params": "" },
+    "join_params": { "custom_data": {}, "private_conn_str": "", "public_conn_str": "" }
+  }
+}

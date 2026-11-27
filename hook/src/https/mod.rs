@@ -180,6 +180,9 @@ mod tests {
         assert_eq!(service_for(Some("social.xboxlive.com")).name, "xboxlive");
         assert_eq!(service_for(Some("a3cac.playfabapi.com")).name, "playfab");
         assert_eq!(service_for(Some("api.steampowered.com")).name, "steam");
+        // RallyHere's hosts come from the game's config: none known here, so none are its.
+        assert!(services().iter().any(|s| s.name == "rallyhere"));
+        assert_ne!(service_for(Some("api.rallyhere.example")).name, "rallyhere");
         // Anything else, or no Host at all: the last one (PlayFab's API).
         assert_eq!(service_for(Some("www.example.com")).name, "playfab");
         assert_eq!(service_for(None).name, "playfab");
